@@ -102,6 +102,19 @@ def _convert_args(handler, args):
 
     args = list(args)
     params = inspect.signature(handler).parameters
+
+    # Before converting any positional args, see if the command handler has
+    # *args and strip them off if so.
+    star_args = []
+    if params:
+        last_param = list(params.values())[-1]
+        if last_param.kind in [inspect.Parameter.KEYWORD_ONLY,
+                               inspect.Parameter.VAR_KEYWORD]:
+            raise TypeError("**kwargss and keyword-only args aren't supported")
+        if last_param.kind == inspect.Parameter.VAR_POSITIONAL:
+            star_args = args[:len(params) - 1]
+            args = args[len(params) - 1:]
+
     for i, (arg, name) in enumerate(zip(args, params)):
         default = params[name].default
         annotation = params[name].annotation
@@ -117,7 +130,7 @@ def _convert_args(handler, args):
                 # convert the arg to the default value's type.
                 args[i] = type(default)(arg)
 
-    return args
+    return args + star_args
 
 
 class Engine(object):

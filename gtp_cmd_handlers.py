@@ -30,6 +30,22 @@ def translate_gtp_color(gtp_color):
     raise ValueError("invalid color {}".format(gtp_color))
 
 
+def _replay_sgf(player, sgf, movenum):
+    # Clear the board before replaying sgf
+    # TODO: should this use the sgfs komi?
+    player.initialize_game(go.Position())
+
+    # This is kinda bad, because replay_sgf is already calling
+    # 'play move' on its internal position objects, but we really
+    # want to advance the engine along with us rather than try to
+    # push in some finished Position object.
+    for idx, p in enumerate(sgf_wrapper.replay_sgf(sgf)):
+        dbg("playing #", idx, p.next_move)
+        player.play_move(p.next_move)
+        if movenum and idx == movenum:
+            break
+
+
 class BasicCmdHandler(object):
     """GTP command handler for basic play commands."""
 
@@ -150,19 +166,7 @@ class RegressionsCmdHandler(object):
         except:
             raise ValueError("Unreadable file: " + filename)
 
-        # Clear the board before replaying sgf
-        # TODO: should this use the sgfs komi?
-        self._player.initialize_game(go.Position())
-
-        # This is kinda bad, because replay_sgf is already calling
-        # 'play move' on its internal position objects, but we really
-        # want to advance the engine along with us rather than try to
-        # push in some finished Position object.
-        for idx, p in enumerate(sgf_wrapper.replay_sgf(contents)):
-            dbg("playing #", idx, p.next_move)
-            self._player.play_move(p.next_move)
-            if movenum and idx == movenum:
-                break
+        _replay_sgf(self._player, contents, movenum)
 
 
 class GoGuiCmdHandler(object):
@@ -220,6 +224,24 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
         self._last_report_time = None
         self._report_search_interval = 0.0
 
+        self._init_node_id_map()
+        self.cmd_clear_board()
+
+    def _init_node_id_map(self):
+        self._node_id_map = {self._player.get_root(): 'XX'}
+
+    def _register_node(self, node):
+        id_str = self._node_id_map.get(node)
+        if id_str is None:
+            move = node.position.recent[-1].move
+            if move is None:
+                move_str = 'tt'
+            else:
+                move_str = coords.to_sgf(move)
+            id_str = self._node_id_map[node.parent] + move_str
+            self._node_id_map[node] = id_str
+        return id_str
+
     def cmd_echo(self, *args):
         return " ".join(args)
 
@@ -240,6 +262,7 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
 
     def cmd_clear_board(self):
         super().cmd_clear_board()
+        self._init_node_id_map()
         self._minigui_report_position()
 
     def cmd_play(self, arg0: str, arg1=None):
@@ -298,7 +321,7 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
                     board.append(".")
 
         msg = {
-            "id": hex(id(root)),
+            "id": self._register_node(root),
             "toPlay": "B" if position.to_play == 1 else "W",
             "moveNum": position.n,
             "stones": "".join(board),
@@ -306,7 +329,7 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
             "caps": position.caps,
         }
         if root.parent and root.parent.parent:
-            msg["parentId"] = hex(id(root.parent))
+            msg["parentId"] = self._register_node(root.parent)
             msg["q"] = float(root.parent.Q)
         if position.recent:
             msg["move"] = coords.to_kgs(position.recent[-1].move)
@@ -327,7 +350,7 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
         position = root.position
 
         msg = {
-            "id": hex(id(root)),
+            "id": self._register_node(root),
             "n": int(root.N),
             "q": float(root.Q),
         }
@@ -368,3 +391,27 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
             msg["variations"] = variations
 
         dbg("mg-update:%s" % json.dumps(msg, sort_keys=True))
+
+    def cmd_playsgf(self, *args):
+        sgf = " ".join(args).replace('\\n', '\n')
+        _replay_sgf(self._player, sgf, 0)
+
+    def cmd_select_position(self, node_id: str):
+        # Valid node IDs start with 'XX'.
+        if node_id[:2] != 'XX':
+            raise ValueError('Invalid node ID "%s"' % node_id)
+        node_id = node_id[2:]
+
+        moves = []
+        while node_id:
+            moves.append(coords.from_sgf(node_id[:2]))
+            node_id = node_id[2:]
+
+        self._player.initialize_game(go.Position(komi=self._komi))
+        self._init_node_id_map()
+        print("MOVES", moves)
+        print("ID_MAP", self._node_id_map)
+        for move in moves:
+            self._player.play_move(move)
+            self._register_node(self._player.get_root())
+        self._minigui_report_position()
