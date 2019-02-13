@@ -32,6 +32,14 @@
 
 namespace minigo {
 
+namespace {
+
+std::string NodeId(const Node* node) {
+  return absl::StrFormat("%x", node->position.stone_hash());
+}
+
+}  // namespace
+
 MiniguiPlayer::MiniguiPlayer(std::unique_ptr<DualNet> network,
                              const Options& options)
     : GtpPlayer(std::move(network), options) {
@@ -515,7 +523,7 @@ MiniguiPlayer::AuxInfo* MiniguiPlayer::GetAuxInfo(MctsNode* node) const {
 }
 
 MiniguiPlayer::AuxInfo::AuxInfo(AuxInfo* parent, MctsNode* node)
-    : parent(parent), node(node), id(absl::StrFormat("%p", node)) {
+    : parent(parent), node(node), id(NodeId(node)) {
   if (parent != nullptr) {
     parent->children.push_back(this);
   }

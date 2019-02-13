@@ -102,6 +102,10 @@ class MCTSPlayer(MCTSPlayerInterface):
                 0) or self.num_readouts > 0
         super().__init__()
 
+    def undo_move(self):
+        # TODO(tommadams): what else is required?
+        self.root = self.root.parent
+
     def get_position(self):
         return self.root.position if self.root else None
 
@@ -169,7 +173,7 @@ class MCTSPlayer(MCTSPlayerInterface):
             raise
 
         self.position = self.root.position  # for showboard
-        del self.root.parent.children
+        self.root.parent.children = {}
         return True  # GTP requires positive result.
 
     def pick_move(self):
