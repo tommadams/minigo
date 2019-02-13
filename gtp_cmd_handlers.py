@@ -30,22 +30,6 @@ def translate_gtp_color(gtp_color):
     raise ValueError("invalid color {}".format(gtp_color))
 
 
-def _replay_sgf(player, sgf, movenum):
-    # Clear the board before replaying sgf
-    # TODO: should this use the sgfs komi?
-    player.initialize_game(go.Position())
-
-    # This is kinda bad, because replay_sgf is already calling
-    # 'play move' on its internal position objects, but we really
-    # want to advance the engine along with us rather than try to
-    # push in some finished Position object.
-    for idx, p in enumerate(sgf_wrapper.replay_sgf(sgf)):
-        dbg("playing #", idx, p.next_move)
-        player.play_move(p.next_move)
-        if movenum and idx == movenum:
-            break
-
-
 class BasicCmdHandler(object):
     """GTP command handler for basic play commands."""
 
@@ -174,7 +158,7 @@ class RegressionsCmdHandler(object):
         # 'play move' on its internal position objects, but we really
         # want to advance the engine along with us rather than try to
         # push in some finished Position object.
-        for idx, p in enumerate(sgf_wrapper.replay_sgf(sgf)):
+        for idx, p in enumerate(sgf_wrapper.replay_sgf(contents)):
             dbg("playing #", idx, p.next_move)
             self._player.play_move(p.next_move)
             if movenum and idx == movenum:
@@ -240,6 +224,10 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
         self.cmd_clear_board()
 
     def _init_node_id_map(self):
+        # A map from node object to a string ID. The Python code uses the list
+        # of SGF moves that resulted in the position as the ID, prefixed with
+        # "XX" to represent the empty position. To avoid ambiguity, the string
+        # "tt" is used to represent passes instead of the empty string.
         self._node_id_map = {self._player.get_root(): 'XX'}
 
     def _register_node(self, node):
