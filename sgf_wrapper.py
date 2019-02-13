@@ -119,8 +119,13 @@ def add_stones(pos, black_stones_added, white_stones_added):
     return new_position
 
 
-def get_next_move(node):
-    props = node.next.properties
+def has_move(node):
+    props = node.properties
+    return 'W' in props or 'B' in props
+
+
+def get_move(node):
+    props = node.properties
     if 'W' in props:
         return coords.from_sgf(props['W'][0])
     else:
@@ -166,10 +171,31 @@ def replay_sgf(sgf_contents):
     while pos is not None and current_node.next is not None:
         pos = handle_node(pos, current_node)
         maybe_correct_next(pos, current_node.next)
-        next_move = get_next_move(current_node)
+        next_move = get_move(current_node.next)
         yield PositionWithContext(pos, next_move, result)
         current_node = current_node.next
 
+
+class Node(object):
+    def __init__(self, src):
+        self.move = get_move(src)
+        self.children = []
+
+def read_sgf_trees(sgf_contents):
+    def traverse(tree, children):
+        for n in tree.nodes:
+            if has_move(n):
+                children.append(Node(n))
+                children = children[-1].children
+        for c in tree.children:
+            traverse(c, children)
+
+    collection = sgf.parse(sgf_contents)
+    result = []
+    for child in collection.children:
+        traverse(child, result)
+
+    return result
 
 def replay_sgf_file(sgf_file):
     with open(sgf_file) as f:

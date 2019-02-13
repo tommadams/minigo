@@ -43,7 +43,7 @@ std::ostream& operator<<(std::ostream& os, const MctsPlayer::Options& options) {
      << " seconds_per_move:" << options.seconds_per_move
      << " time_limit:" << options.time_limit
      << " decay_factor:" << options.decay_factor
-     << " random_seed:" << options.random_seed;
+     << " random_seed:" << options.random_seed << std::flush;
   return os;
 }
 
@@ -143,7 +143,7 @@ Coord MctsPlayer::SuggestMove() {
   if (options_.inject_noise) {
     std::array<float, kNumMoves> noise;
     rnd_.Dirichlet(kDirichletAlpha, &noise);
-    root_->InjectNoise(noise);
+    root_->InjectNoise(noise, options_.noise_mix);
   }
   int current_readouts = root_->N();
 

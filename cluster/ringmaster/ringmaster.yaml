@@ -1,17 +1,18 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: minigo-cc-evaluator-$JOBNAME
+  name: ringmaster-runner-$JOB_NAME
 spec:
+  backoffLimit: 100
   parallelism: 10
   completions: 10
   template:
     metadata:
-      name: gpu-evaluator
+      name: ringmaster-runner-$JOB_NAME
     spec:
       containers:
-      - name: evaluator
-        image: gcr.io/$PROJECT/minigo-cc-evaluator:$EVAL_VERSION_TAG
+      - name: ringmaster-runner
+        image: gcr.io/tensor-go/mg-ring:latest
         imagePullPolicy: Always
         resources:
           limits:
@@ -24,14 +25,14 @@ spec:
         env:
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: /etc/credentials/service-account.json
-        - name: SGF_BUCKET_NAME
-          value: $BUCKET_NAME
-        - name: MODEL_WHITE
-          value: $MODEL_WHITE
-        - name: MODEL_BLACK
-          value: $MODEL_BLACK
-        - name: JOBNAME
-          value: $JOBNAME
+        - name: RINGMASTER_CONTROL_PATH
+          value: $RINGMASTER_CONTROL_PATH
+        - name: OUT_PATH
+          value: $OUT_PATH
+        - name: MODEL_ONE
+          value: $MODEL_ONE
+        - name: MODEL_TWO
+          value: $MODEL_TWO
         - name: LD_LIBRARY_PATH
           value: /usr/local/nvidia/lib64
       volumes:

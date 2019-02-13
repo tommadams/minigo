@@ -98,7 +98,7 @@ define(["require", "exports"], function (require, exports) {
                 resolve(result);
             }
             else {
-                reject(result);
+                reject(`error processing "${trimText(cmd, 100)}" : "${trimText(result, 100)}"`);
             }
         }
         stderrHandler(line) {

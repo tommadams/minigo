@@ -84,7 +84,7 @@ class BasicCmdHandler(object):
             # let's assume this never happens for now.
             # self._accomodate_out_of_turn(translate_gtp_color(arg0))
             move = arg1
-        return self._player.play_move(coords.from_kgs(move))
+        return self._player.play_move(coords.from_gtp(move))
 
     def cmd_genmove(self, color=None):
         if color is not None:
@@ -107,7 +107,7 @@ class BasicCmdHandler(object):
         if self._player.get_root().is_done():
             self._player.set_result(self._player.get_position().result(),
                                     was_resign=False)
-        return coords.to_kgs(move)
+        return coords.to_gtp(move)
 
     def cmd_undo(self):
         raise NotImplementedError()
@@ -166,7 +166,19 @@ class RegressionsCmdHandler(object):
         except:
             raise ValueError("Unreadable file: " + filename)
 
-        _replay_sgf(self._player, contents, movenum)
+        # Clear the board before replaying sgf
+        # TODO: should this use the sgfs komi?
+        self._player.initialize_game(go.Position())
+
+        # This is kinda bad, because replay_sgf is already calling
+        # 'play move' on its internal position objects, but we really
+        # want to advance the engine along with us rather than try to
+        # push in some finished Position object.
+        for idx, p in enumerate(sgf_wrapper.replay_sgf(sgf)):
+            dbg("playing #", idx, p.next_move)
+            self._player.play_move(p.next_move)
+            if movenum and idx == movenum:
+                break
 
 
 class GoGuiCmdHandler(object):
@@ -207,7 +219,7 @@ class GoGuiCmdHandler(object):
 
     def _heatmap(self, sort_order, node, prop):
         return "\n".join(["{!s:6} {}".format(
-            coords.to_kgs(coords.from_flat(key)),
+            coords.to_gtp(coords.from_flat(key)),
             node.__dict__.get(prop)[key])
             for key in sort_order if node.child_N[key] > 0][: 20])
 
@@ -332,7 +344,7 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
             msg["parentId"] = self._register_node(root.parent)
             msg["q"] = float(root.parent.Q)
         if position.recent:
-            msg["move"] = coords.to_kgs(position.recent[-1].move)
+            msg["move"] = coords.to_gtp(position.recent[-1].move)
         dbg("mg-position:%s" % json.dumps(msg, sort_keys=True))
 
     def _minigui_report_search_status(self, leaves):
@@ -347,7 +359,6 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
          """
 
         root = self._player.get_root()
-        position = root.position
 
         msg = {
             "id": self._register_node(root),
@@ -363,10 +374,10 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
         for i in ranked_children[:15]:
             if root.child_N[i] == 0 or i not in root.children:
                 break
-            c = coords.to_kgs(coords.from_flat(i))
+            c = coords.to_gtp(coords.from_flat(i))
             child = root.children[i]
             nodes = child.most_visited_path_nodes()
-            moves = [coords.to_kgs(coords.from_flat(m.fmove)) for m in nodes]
+            moves = [coords.to_gtp(coords.from_flat(m.fmove)) for m in nodes]
             variations[c] = {
                 "n": int(root.child_N[i]),
                 "q": float(root.child_Q[i]),
@@ -384,7 +395,7 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
                 variations["live"] = {
                     "n": int(root.child_N[path[0]]),
                     "q": float(root.child_Q[path[0]]),
-                    "moves": [coords.to_kgs(coords.from_flat(m)) for m in path]
+                    "moves": [coords.to_gtp(coords.from_flat(m)) for m in path]
                 }
 
         if variations:
@@ -392,9 +403,30 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
 
         dbg("mg-update:%s" % json.dumps(msg, sort_keys=True))
 
+    def _process_sgf(self, sgf_contents):
+        trees = sgf_wrapper.read_sgf_trees(sgf_contents)
+
+        self._player.initialize_game(go.Position(komi=self._komi))
+        self._init_node_id_map()
+
+        def traverse(node):
+            self._player.play_move(node.move)
+            self._minigui_report_position()
+            for child in node.children:
+                traverse(child)
+            self._player.undo_move()
+
+        for tree in trees:
+            traverse(tree)
+
+    def cmd_loadsgf(self, path):
+        with open(path, "r") as f:
+            sgf_contents = f.read()
+        self._process_sgf(sgf_contents)
+
     def cmd_playsgf(self, *args):
-        sgf = " ".join(args).replace('\\n', '\n')
-        _replay_sgf(self._player, sgf, 0)
+        sgf_contents = " ".join(args).replace('\\n', '\n')
+        self._process_sgf(sgf_contents)
 
     def cmd_select_position(self, node_id: str):
         # Valid node IDs start with 'XX'.
@@ -409,9 +441,6 @@ class MiniguiBasicCmdHandler(BasicCmdHandler):
 
         self._player.initialize_game(go.Position(komi=self._komi))
         self._init_node_id_map()
-        print("MOVES", moves)
-        print("ID_MAP", self._node_id_map)
         for move in moves:
             self._player.play_move(move)
             self._register_node(self._player.get_root())
-        self._minigui_report_position()

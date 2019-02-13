@@ -168,7 +168,7 @@ class Socket {
     if (ok) {
       resolve(result);
     } else {
-      reject(result);
+      reject(`error processing "${trimText(cmd, 100)}" : "${trimText(result, 100)}"`);
     }
   }
 
