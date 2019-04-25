@@ -174,6 +174,7 @@ minigo_cc_library(
     deps = [
         ":dual_net",
         "//cc:base",
+        "//cc/file:path",
         "//cc:logging",
         "//cc:tensorflow",
         "//cc:thread_safe_queue",

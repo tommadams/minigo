@@ -612,6 +612,18 @@ minigo_cc_binary(
 )
 
 minigo_cc_binary(
+    name = "tpu_multithread_test",
+    srcs = ["tpu_multithread_test.cc"],
+    tags = ["manual"],
+    deps = [
+        ":logging",
+        "//cc/dual_net:factory",
+        "@com_github_gflags_gflags//:gflags",
+        "@com_google_absl//absl/memory",
+    ],
+)
+
+minigo_cc_binary(
     name = "tpu_test",
     srcs = ["tpu_test.cc"],
     tags = ["manual"],

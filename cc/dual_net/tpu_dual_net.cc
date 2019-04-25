@@ -24,6 +24,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
 #include "cc/constants.h"
+#include "cc/file/path.h"
 #include "cc/logging.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -46,7 +47,7 @@ namespace minigo {
 namespace {
 // Use double buffering: one running the current set of batches, the other
 // filling up the next set of batches.
-constexpr int kBufferCount = 2;
+constexpr int kBufferCount = 20;
 
 // A GraphDef containing the ops required to initialize and shutdown a TPU.
 // This proto was generated from the script oneoffs/generate_tpu_graph_def.py.
@@ -163,7 +164,8 @@ void TpuDualNet::Worker::Reserve(size_t capacity) {
 
 TpuDualNet::TpuDualNet(const std::string& tpu_name,
                        const std::string& graph_path)
-    : graph_path_(graph_path) {
+    : DualNet(std::string(file::Stem(graph_path))),
+      graph_path_(graph_path) {
   // Make sure tpu_name looks like a valid name.
   MG_CHECK(absl::StartsWith(tpu_name, "grpc://"));
 
@@ -257,7 +259,8 @@ int TpuDualNetFactory::GetBufferCount() const { return kBufferCount; }
 
 std::unique_ptr<DualNet> TpuDualNetFactory::NewDualNet(
     const std::string& model) {
-  return absl::make_unique<TpuDualNet>(tpu_name_, model);
+  auto result = absl::make_unique<TpuDualNet>(tpu_name_, model);
+  return result;
 }
 
 }  // namespace minigo
