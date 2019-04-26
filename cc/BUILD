@@ -616,10 +616,10 @@ minigo_cc_binary(
     srcs = ["tpu_multithread_test.cc"],
     tags = ["manual"],
     deps = [
-        ":logging",
-        "//cc/dual_net:factory",
+        "//cc:tensorflow",
         "@com_github_gflags_gflags//:gflags",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
     ],
 )
 
