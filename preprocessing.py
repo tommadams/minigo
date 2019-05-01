@@ -211,7 +211,7 @@ def get_tpu_input_tensors(batch_size, tf_records, num_repeats=1,
                           filter_amount=1, random_rotation=True):
     # TPUs trains on sequential golden chunks to simplify preprocessing and
     # reproducibility.
-    assert len(tf_records) < 101, "Use example_buffer to build a golden_chunk"
+    assert len(tf_records) <= 500, "Use example_buffer to build a golden_chunk"
 
     dataset = read_tf_records(
         batch_size,

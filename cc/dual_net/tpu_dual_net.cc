@@ -47,7 +47,7 @@ namespace minigo {
 namespace {
 // Use double buffering: one running the current set of batches, the other
 // filling up the next set of batches.
-constexpr int kBufferCount = 20;
+constexpr int kBufferCount = 2;
 
 // A GraphDef containing the ops required to initialize and shutdown a TPU.
 // This proto was generated from the script oneoffs/generate_tpu_graph_def.py.
@@ -108,7 +108,6 @@ TpuDualNet::Worker::Worker(const tensorflow::GraphDef& graph_def,
 }
 
 TpuDualNet::Worker::~Worker() {
-  MG_LOG(INFO) << "Closing worker session";
   TF_CHECK_OK(session_->Close());
 }
 
@@ -181,8 +180,9 @@ TpuDualNet::TpuDualNet(const std::string& tpu_name,
       break;
     }
   }
-  MG_CHECK(found_tpu_op) << "didn't find any ops starting with \"tpu\" this "
-                            "model looks like it wasn't compiled for TPU";
+  MG_CHECK(found_tpu_op) << "didn't find any ops starting with \"tpu\", "
+                         << graph_path
+                         << " doesn't look like it was compiled for TPU";
 
   // Count the number of times the model is replicated. There should be eight,
   // one replica for each TPU core.
@@ -248,10 +248,7 @@ TpuDualNetFactory::TpuDualNetFactory(std::string tpu_name)
 }
 
 TpuDualNetFactory::~TpuDualNetFactory() {
-  MG_LOG(INFO) << "Shutting down TPU " << tpu_name_;
   TF_CHECK_OK(main_session_->Run({}, {}, {"ShutdownDistributedTPU"}, nullptr));
-
-  MG_LOG(INFO) << "Closing main session";
   TF_CHECK_OK(main_session_->Close());
 }
 

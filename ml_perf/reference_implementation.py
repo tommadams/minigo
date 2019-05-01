@@ -18,7 +18,6 @@ import sys
 sys.path.insert(0, '.')  # nopep8
 
 import asyncio
-import glob
 import logging
 import numpy as np
 import os
@@ -145,8 +144,8 @@ def initialize_from_checkpoint(state):
   """Initialize the reinforcement learning loop from a checkpoint."""
 
   # The checkpoint's work_dir should contain the most recently trained model.
-  model_paths = glob.glob(os.path.join(FLAGS.checkpoint_dir,
-                                       'work_dir/model.ckpt-*.pb'))
+  model_paths = tf.gfile.Glob(os.path.join(FLAGS.checkpoint_dir,
+                                           'work_dir/model.ckpt-*.pb'))
   if len(model_paths) != 1:
     raise RuntimeError('Expected exactly one model in the checkpoint work_dir, '
                        'got [{}]'.format(', '.join(model_paths)))
@@ -154,22 +153,26 @@ def initialize_from_checkpoint(state):
 
   # Copy the latest trained model into the models directory and use it on the
   # first round of selfplay.
+  print("Copying checkpoint")
   state.best_model_name = 'checkpoint'
-  shutil.copy(start_model_path,
-              os.path.join(fsdb.models_dir(), state.best_model_name + '.pb'))
+  gfile.Copy(start_model_path,
+             os.path.join(fsdb.models_dir(), state.best_model_name + '.pb'))
 
-  # Copy the training chunks.
+  # Copy the golden chunks.
+  print("Copying golden chunks")
   golden_chunks_dir = os.path.join(FLAGS.checkpoint_dir, 'golden_chunks')
   for basename in os.listdir(golden_chunks_dir):
-    path = os.path.join(golden_chunks_dir, basename)
-    shutil.copy(path, fsdb.golden_chunk_dir())
+    gfile.Copy(os.path.join(golden_chunks_dir, basename),
+               os.path.join(fsdb.golden_chunk_dir(), basename))
 
   # Copy the training files.
+  print("Copying training files")
   work_dir = os.path.join(FLAGS.checkpoint_dir, 'work_dir')
   for basename in os.listdir(work_dir):
-    path = os.path.join(work_dir, basename)
-    shutil.copy(path, fsdb.working_dir())
+    gfile.Copy(os.path.join(work_dir, basename),
+               os.path.join(fsdb.working_dir(), basename))
 
+  print("Checkpoint initialized")
 
 def parse_win_stats_table(stats_str, num_lines):
   result = []
@@ -290,11 +293,17 @@ async def train(state, tf_records):
       '--training_seed={}'.format(state.seed),
       '--freeze=true')
   # Append the time elapsed from when the RL was started to when this model
-  # was trained.
+  # was trained. GCS files are immutable, so we have to do the append manually.
   elapsed = time.time() - state.start_time
   timestamps_path = os.path.join(fsdb.models_dir(), 'train_times.txt')
-  with gfile.Open(timestamps_path, 'a') as f:
-    print('{:.3f} {}'.format(elapsed, state.train_model_name), file=f)
+  try:
+    with gfile.Open(timestamps_path, 'r') as f:
+      timestamps = f.read()
+  except tf.errors.NotFoundError:
+    timestamps = ''
+  timestamps += '{:.3f} {}\n'.format(elapsed, state.train_model_name)
+  with gfile.Open(timestamps_path, 'w') as f:
+    f.write(timestamps)
 
 
 async def validate(state, holdout_glob):
@@ -305,7 +314,7 @@ async def validate(state, holdout_glob):
     holdout_glob: a glob that matches holdout games.
   """
 
-  if not glob.glob(holdout_glob):
+  if not tf.gfile.Glob(holdout_glob):
     print('Glob "{}" didn\'t match any files, skipping validation'.format(
           holdout_glob))
   else:
@@ -418,7 +427,15 @@ def main(unused_argv):
   """Run the reinforcement learning loop."""
 
   print('Wiping dir %s' % FLAGS.base_dir, flush=True)
-  shutil.rmtree(FLAGS.base_dir, ignore_errors=True)
+  try:
+    gfile.DeleteRecursively(FLAGS.base_dir)
+  except:
+    pass
+  try:
+    gfile.DeleteRecursively(os.path.join('gs://' + FLAGS.bucket_name, FLAGS.base_dir))
+  except:
+    pass
+
   dirs = [fsdb.models_dir(), fsdb.selfplay_dir(), fsdb.holdout_dir(),
           fsdb.eval_dir(), fsdb.golden_chunk_dir(), fsdb.working_dir()]
   for d in dirs:
@@ -426,12 +443,14 @@ def main(unused_argv):
 
   # Copy the flag files so there's no chance of them getting accidentally
   # overwritten while the RL loop is running.
+  print("Copying flags")
   flags_dir = os.path.join(FLAGS.base_dir, 'flags')
   shutil.copytree(FLAGS.flags_dir, flags_dir)
   FLAGS.flags_dir = flags_dir
 
   # Copy the target model to the models directory so we can find it easily.
-  shutil.copy(FLAGS.target_path, os.path.join(fsdb.models_dir(), 'target.pb'))
+  print("Copying target model")
+  tf.gfile.Copy(FLAGS.target_path, os.path.join(fsdb.models_dir(), 'target.pb'))
 
   logging.getLogger().addHandler(
       logging.FileHandler(os.path.join(FLAGS.base_dir, 'rl_loop.log')))

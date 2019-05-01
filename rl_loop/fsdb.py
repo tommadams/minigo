@@ -38,8 +38,8 @@ flags.DEFINE_string(
 
 flags.register_multi_flags_validator(
     ['base_dir', 'bucket_name'],
-    lambda flags: bool(flags['base_dir']) != bool(flags['bucket_name']),
-    'Exactly one of --base_dir, --bucket_name must be set!')
+    lambda flags: bool(flags['base_dir']) and bool(flags['bucket_name']),
+    'Both --base_dir and --bucket_name must be set!')
 
 FLAGS = flags.FLAGS
 
@@ -49,23 +49,29 @@ def switch_base(new_base):
     else:
         FLAGS.bucket_name = new_base
 
-def _with_base(*args):
+
+def _with_local_base(*args):
     def inner():
-        base_dir = FLAGS.base_dir or 'gs://{}'.format(FLAGS.bucket_name)
-        return os.path.join(base_dir, *args)
+        return os.path.join(FLAGS.base_dir, *args)
+    return inner
+
+
+def _with_gcs_base(*args):
+    def inner():
+        return os.path.join('gs://' + FLAGS.bucket_name, FLAGS.base_dir, *args)
     return inner
 
 
 # Functions to compute various important directories, based on FLAGS input.
-working_dir = _with_base('work_dir')
-models_dir = _with_base('models')
-selfplay_dir = _with_base('data', 'selfplay')
-holdout_dir = _with_base('data', 'holdout')
-sgf_dir = _with_base('sgf')
-eval_dir = _with_base('sgf', 'eval')
-golden_chunk_dir = _with_base('data', 'golden_chunks')
-flags_path = _with_base('flags.txt')
-eval_flags_path = _with_base('eval-flags.txt')
+working_dir = _with_gcs_base('work_dir')
+models_dir = _with_gcs_base('models')
+selfplay_dir = _with_local_base('data', 'selfplay')
+holdout_dir = _with_local_base('data', 'holdout')
+sgf_dir = _with_local_base('sgf')
+eval_dir = _with_local_base('sgf', 'eval')
+golden_chunk_dir = _with_gcs_base('data', 'golden_chunks')
+flags_path = _with_local_base('flags.txt')
+eval_flags_path = _with_local_base('eval-flags.txt')
 
 
 def get_pbs():

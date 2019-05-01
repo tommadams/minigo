@@ -20,6 +20,7 @@ sys.path.insert(0, '.')  # nopep8
 import asyncio
 import logging
 import os
+import sys
 
 from absl import flags
 from utils import *
@@ -62,6 +63,7 @@ async def checked_run(*cmd):
       chunk = await p.stdout.read(16 * 1024)
       if not chunk:
         break
+      #sys.stderr.write(chunk.decode('utf-8'))
       chunks.append(chunk)
 
     # Wait for the process to finish, check it was successful & build stdout.

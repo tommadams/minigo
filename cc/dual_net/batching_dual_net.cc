@@ -108,8 +108,6 @@ void ModelBatcher::MaybeRunBatchesLocked() {
   }
 }
 
-std::atomic<int> XXX{0};
-
 void ModelBatcher::RunBatch() {
   auto batch_size = GetBatchSize();
 
@@ -141,11 +139,7 @@ void ModelBatcher::RunBatch() {
   mutex_.Unlock();
 
   std::string model_name;
-  auto num_features = features.size();
-  auto* fp = features.data();
-  MG_LOG(INFO) << "#### RMS " << fp << " " << num_features << " " << ++XXX;
   model_impl_->RunMany(std::move(features), std::move(outputs), &model_name);
-  MG_LOG(INFO) << "#### RMD " << fp << " " << num_features << " " << --XXX;
 
   for (auto& inference : inferences) {
     if (inference.model_name != nullptr) {

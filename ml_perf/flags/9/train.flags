@@ -13,3 +13,6 @@
 --lr_boundaries=25000
 --lr_boundaries=37500
 --l2_strength=0.0001
+
+--use_tpu=true
+--tpu_name=grpc://10.240.1.18:8470
