@@ -16,7 +16,7 @@ load(
 cc_library(
     name = "tensorflow_dynamic",
     srcs = [
-        "tensorflow/libtensorflow_framework.so",
+        "tensorflow/libtensorflow_framework.so.1",
     ] + select({
         "//cc/config:enable_tpu": ["tensorflow/libgrpc_runtime.so"],
         "//conditions:default": ["tensorflow/libtensorflow_cc.so"],
@@ -25,7 +25,7 @@ cc_library(
         ["tensorflow/**/*"],
         exclude = [
             "**/*.a",
-            "**/*.so",
+            "**/*.so*",
             "tensorflow/flatbuffers/**",
             "tensorflow/tensorflow/contrib/lite/**",
         ],

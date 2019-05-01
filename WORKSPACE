@@ -1,4 +1,4 @@
-# load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
     name = "com_google_protobuf",
@@ -23,18 +23,18 @@ http_archive(
 
 http_archive(
     name = "com_github_googlecloudplatform_google_cloud_cpp",
-    strip_prefix = "google-cloud-cpp-0.4.0",
-    url = "https://github.com/GoogleCloudPlatform/google-cloud-cpp/archive/v0.4.0.zip",
+    strip_prefix = "google-cloud-cpp-0.6.0",
+    url = "https://github.com/GoogleCloudPlatform/google-cloud-cpp/archive/v0.6.0.zip",
 )
 
-new_http_archive(
+http_archive(
     name = "com_google_benchmark",
     build_file = "cc/benchmark.BUILD",
     strip_prefix = "benchmark-1.3.0",
     urls = ["https://github.com/google/benchmark/archive/v1.3.0.zip"],
 )
 
-new_http_archive(
+http_archive(
     name = "com_github_nlohmann_json",
     build_file = "cc/json.BUILD",
     strip_prefix = "json-3.2.0",
