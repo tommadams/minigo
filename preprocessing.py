@@ -86,6 +86,7 @@ def batch_parse_tf_example(batch_size, example_batch):
     parsed = tf.parse_example(example_batch, features)
     x = tf.decode_raw(parsed['x'], tf.uint8)
     x = tf.cast(x, tf.float32)
+    ### x = tf.cast(x, tf.bool)
     x = tf.reshape(x, [batch_size, go.N, go.N,
                        features_lib.NEW_FEATURES_PLANES])
     pi = tf.decode_raw(parsed['pi'], tf.float32)

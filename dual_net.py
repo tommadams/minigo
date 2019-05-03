@@ -214,6 +214,12 @@ def get_inference_input():
                            name='pos_tensor'),
             {'pi_tensor': tf.placeholder(tf.float32, [None, go.N * go.N + 1]),
              'value_tensor': tf.placeholder(tf.float32, [None])})
+    ### return (tf.placeholder(tf.bool,
+    ###                        [None, go.N, go.N, features_lib.NEW_FEATURES_PLANES],
+    ###                        name='pos_tensor'),
+    ###         {'pi_tensor': tf.placeholder(tf.float32, [None, go.N * go.N + 1]),
+    ###          'value_tensor': tf.placeholder(tf.float32, [None])})
+
 
 
 def model_fn(features, labels, mode, params):
@@ -387,6 +393,8 @@ def model_inference_fn(features, training, params):
     Returns:
         (policy_output, value_output, logits) tuple of tensors.
     """
+
+    ### features = tf.dtypes.cast(features, dtype=tf.float32)
 
     mg_batchn = functools.partial(
         tf.layers.batch_normalization,
@@ -649,6 +657,10 @@ def freeze_graph_tpu(model_path):
                 tf.float32, [None, go.N, go.N,
                              features_lib.NEW_FEATURES_PLANES],
                 name='pos_tensor_%d' % i)
+            ### features = tf.placeholder(
+            ###     tf.bool, [None, go.N, go.N,
+            ###                  features_lib.NEW_FEATURES_PLANES],
+            ###     name='pos_tensor_%d' % i)
             replicated_features.append((features,))
         outputs = tf.contrib.tpu.replicate(
             tpu_model_inference_fn, replicated_features)

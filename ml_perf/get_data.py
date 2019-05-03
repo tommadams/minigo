@@ -32,20 +32,42 @@ flags.DEFINE_string('src_dir', 'gs://minigo-pub/ml_perf/',
                     'the BOARD_SIZE environment variable (defaults to 19).')
 
 flags.DEFINE_string('dst_dir', 'ml_perf/',
-                    'Local directory to write to. Files will be written to '
-                    'subdirectories of dst_dir corresponding to the BOARD_SIZE '
-                    'environment variable (defaults to 19).')
+                    'Desitination directory to write to. Files will be written '
+                    'to subdirectories of dst_dir corresponding to the '
+                    'BOARD_SIZE environment variable (defaults to 19).')
 
 flags.DEFINE_boolean('use_tpu', False,
                      'Set to true to generate models that can run on Cloud TPU')
 
+flags.DEFINE_string('gcs_tmp_dir', None,
+                    'If use_tpu true, A temporary GCS directory to copy models '
+                    'to for freezing.')
+
+flags.DEFINE_string('tpu_name', '',
+                    'If use_tpu is true, TPU name used for freezing.')
+
 FLAGS = flags.FLAGS
 
 
-def freeze_graph(path):
+def freeze_graph(src_path):
+  if FLAGS.use_tpu:
+    # Freezing for TPU: copy source files to GCS.
+    utils.wait(utils.checked_run(
+        'gsutil', '-m', 'cp', src_path + '.*', FLAGS.gcs_tmp_dir))
+    freeze_path = os.path.join(FLAGS.gcs_tmp_dir, os.path.basename(src_path))
+  else:
+    freeze_path = src_path
+
   utils.wait(utils.checked_run(
       'python', 'freeze_graph.py',
-      '--model_path={}'.format(path), '--use_tpu={}'.format(FLAGS.use_tpu)))
+      '--model_path={}'.format(freeze_path),
+      '--use_tpu={}'.format(FLAGS.use_tpu),
+      '--tpu_name={}'.format(FLAGS.tpu_name)))
+
+  if FLAGS.use_tpu:
+    # Freezing for TPU: copy frozen model back from GCS.
+    utils.wait(utils.checked_run(
+        'gsutil', 'cp', freeze_path + '.pb', os.path.dirname(src_path)))
 
 
 def main(unused_argv):

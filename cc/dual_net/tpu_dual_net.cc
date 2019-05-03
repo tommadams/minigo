@@ -33,6 +33,7 @@
 #include "tensorflow/core/platform/env.h"
 
 using tensorflow::DT_FLOAT;
+using tensorflow::DT_BOOL;
 using tensorflow::Env;
 using tensorflow::GraphDef;
 using tensorflow::NewSession;
@@ -45,9 +46,6 @@ using tensorflow::TensorShape;
 namespace minigo {
 
 namespace {
-// Use double buffering: one running the current set of batches, the other
-// filling up the next set of batches.
-constexpr int kBufferCount = 2;
 
 // A GraphDef containing the ops required to initialize and shutdown a TPU.
 // This proto was generated from the script oneoffs/generate_tpu_graph_def.py.
@@ -123,10 +121,18 @@ void TpuDualNet::Worker::RunMany(std::vector<const BoardFeatures*> features,
   for (int replica = 0; replica < num_replicas_; ++replica) {
     size_t begin = replica * batch_size;
     size_t end = std::min(num_features, (replica + 1) * batch_size);
+
     auto* data = inputs_[replica].second.flat<float>().data();
     for (size_t i = begin; i < end; ++i) {
       data = std::copy(features[i]->begin(), features[i]->end(), data);
     }
+
+    // auto* data = inputs_[replica].second.flat<bool>().data();
+    // for (size_t i = begin; i < end; ++i) {
+    //   for (auto f : *features[i]) {
+    //     *data++ = f != 0;
+    //   }
+    // }
   }
 
   // Run the model.
@@ -147,7 +153,8 @@ void TpuDualNet::Worker::RunMany(std::vector<const BoardFeatures*> features,
 
 void TpuDualNet::Worker::Reserve(size_t capacity) {
   MG_CHECK(capacity > 0);
-  if (capacity <= batch_capacity_) {
+  if (capacity <= batch_capacity_ &&
+      capacity > 3 * batch_capacity_ / 4) {
     return;
   }
 
@@ -157,14 +164,19 @@ void TpuDualNet::Worker::Reserve(size_t capacity) {
         absl::StrCat("pos_tensor_", i),
         Tensor(DT_FLOAT, TensorShape({static_cast<int>(capacity), kN, kN,
                                       kNumStoneFeatures})));
+    // inputs_.emplace_back(
+    //     absl::StrCat("pos_tensor_", i),
+    //     Tensor(DT_BOOL, TensorShape({static_cast<int>(capacity), kN, kN,
+    //                                   kNumStoneFeatures})));
   }
   batch_capacity_ = capacity;
 }
 
-TpuDualNet::TpuDualNet(const std::string& tpu_name,
+TpuDualNet::TpuDualNet(int buffer_count, const std::string& tpu_name,
                        const std::string& graph_path)
     : DualNet(std::string(file::Stem(graph_path))),
-      graph_path_(graph_path) {
+      graph_path_(graph_path),
+      buffer_count_(buffer_count) {
   // Make sure tpu_name looks like a valid name.
   MG_CHECK(absl::StartsWith(tpu_name, "grpc://"));
 
@@ -199,7 +211,7 @@ TpuDualNet::TpuDualNet(const std::string& tpu_name,
                << graph_path;
   MG_CHECK(num_replicas > 0);
 
-  for (int i = 0; i < kBufferCount; ++i) {
+  for (int i = 0; i < buffer_count_; ++i) {
     workers_.Push(absl::make_unique<TpuDualNet::Worker>(graph_def, tpu_name,
                                                         num_replicas));
   }
@@ -210,7 +222,7 @@ TpuDualNet::TpuDualNet(const std::string& tpu_name,
   // so explicitly run inference once during construction.
   MG_LOG(INFO) << "Running warm-up inferences";
   std::vector<std::thread> threads;
-  for (int i = 0; i < kBufferCount; ++i) {
+  for (int i = 0; i < buffer_count_; ++i) {
     threads.emplace_back([this]() {
       BoardFeatures features;
       Output output;
@@ -235,8 +247,8 @@ void TpuDualNet::RunMany(std::vector<const BoardFeatures*> features,
   }
 }
 
-TpuDualNetFactory::TpuDualNetFactory(std::string tpu_name)
-    : tpu_name_(std::move(tpu_name)) {
+TpuDualNetFactory::TpuDualNetFactory(int buffer_count, std::string tpu_name)
+    : buffer_count_(buffer_count), tpu_name_(std::move(tpu_name)) {
   // Create a session containing ops for initializing & shutting down a TPU.
   GraphDef graph_def;
   ::tensorflow::protobuf::TextFormat::ParseFromString(
@@ -252,11 +264,11 @@ TpuDualNetFactory::~TpuDualNetFactory() {
   TF_CHECK_OK(main_session_->Close());
 }
 
-int TpuDualNetFactory::GetBufferCount() const { return kBufferCount; }
+int TpuDualNetFactory::GetBufferCount() const { return buffer_count_; }
 
 std::unique_ptr<DualNet> TpuDualNetFactory::NewDualNet(
     const std::string& model) {
-  auto result = absl::make_unique<TpuDualNet>(tpu_name_, model);
+  auto result = absl::make_unique<TpuDualNet>(buffer_count_, tpu_name_, model);
   return result;
 }
 

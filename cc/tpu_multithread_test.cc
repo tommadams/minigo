@@ -23,6 +23,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
+#include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "gflags/gflags.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -34,10 +36,16 @@
 
 DEFINE_string(model, "", "");
 DEFINE_string(tpu_name, "", "");
-DEFINE_int32(num_threads, 16, "Number of threads to run in parallel");
-DEFINE_int32(batch_size, 128, "Batch size");
+DEFINE_int32(num_threads, 16, "");
+DEFINE_int32(parallel_games, 2000, "");
+DEFINE_int32(virtual_losses, 8, "");
+DEFINE_bool(bool_features, false, "");
+DEFINE_int32(iterations, 100, "");
+DEFINE_string(compression_algorithm, "deflate", "");
+DEFINE_int32(compression_level, 1, "");
 
 using tensorflow::DT_FLOAT;
+using tensorflow::DT_BOOL;
 using tensorflow::Env;
 using tensorflow::GraphDef;
 using tensorflow::NewSession;
@@ -101,6 +109,10 @@ std::unique_ptr<Session> CreateSession(const GraphDef& graph_def,
   options.target = tpu_name;
   options.config.set_allow_soft_placement(true);
   options.config.set_log_device_placement(true);
+  // options.config.mutable_rpc_options()->set_compression_algorithm(
+  //     FLAGS_compression_algorithm);
+  // options.config.mutable_rpc_options()->set_compression_level(
+  //     FLAGS_compression_level);
   std::unique_ptr<Session> session(NewSession(options));
   TF_CHECK_OK(session->Create(graph_def));
   return session;
@@ -110,21 +122,29 @@ struct Thread {
   Thread(int thread_id, const GraphDef& graph_def, const std::string& tpu_name,
          int num_replicas)
       : thread_id(thread_id) {
+    auto batch_size =
+        FLAGS_parallel_games * FLAGS_virtual_losses / FLAGS_num_threads;
+    auto data_type = FLAGS_bool_features ? DT_BOOL : DT_FLOAT;
+
     session = CreateSession(graph_def, tpu_name);
     for (int i = 0; i < num_replicas; ++i) {
       output_names.push_back(absl::StrCat("policy_output_", i));
       output_names.push_back(absl::StrCat("value_output_", i));
       inputs.emplace_back(
           absl::StrCat("pos_tensor_", i),
-          Tensor(DT_FLOAT, TensorShape({FLAGS_batch_size, kN, kN,
-                                       kNumStoneFeatures})));
+          Tensor(data_type, TensorShape({batch_size, kN, kN,
+                                         kNumStoneFeatures})));
     }
+    // Warm up inference.
+    TF_CHECK_OK(session->Run(inputs, output_names, {}, &outputs));
   }
 
   void Run() {
     thread = std::thread([this]() {
-      for (;;) {
-        std::cout << absl::StrCat(thread_id, " running\n") << std::flush;
+      for (int i = 0; i < FLAGS_iterations; ++i) {
+        if (thread_id == 0) {
+	  std::cout << (i + 1) << " / " << FLAGS_iterations << std::endl;
+	}
         TF_CHECK_OK(session->Run(inputs, output_names, {}, &outputs));
       }
     });
@@ -147,6 +167,9 @@ void MultithreadTest() {
   ::tensorflow::protobuf::TextFormat::ParseFromString(
       kTpuOpsGraphDef, &graph_def);
   auto main_session = CreateSession(graph_def, FLAGS_tpu_name);
+  auto batch_size =
+      FLAGS_parallel_games * FLAGS_virtual_losses / FLAGS_num_threads;
+  auto total_inferences = batch_size * FLAGS_iterations * FLAGS_num_threads;
 
   std::cout << "Initializing TPU " << FLAGS_tpu_name << std::endl;
   TF_CHECK_OK(main_session->Run({}, {}, {"ConfigureDistributedTPU"}, nullptr));
@@ -170,12 +193,15 @@ void MultithreadTest() {
     threads.push_back(absl::make_unique<Thread>(i, graph_def, FLAGS_tpu_name,
                                                 num_replicas));
   }
+  auto start = absl::Now();
   for (auto& t : threads) {
     t->Run();
   }
   for (auto& t : threads) {
     t->Join();
   }
+  auto elapsed = absl::Now() - start;
+  std::cout << "Ran " << total_inferences << " inferences in " << elapsed << std::endl;
 
   std::cout << "Shutting down TPU" << std::endl;
   TF_CHECK_OK(main_session->Run({}, {}, {"ShutdownDistributedTPU"}, nullptr));

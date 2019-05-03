@@ -23,7 +23,7 @@ git clone https://github.com/tensorflow/tensorflow "${tmp_dir}"
 pushd "${tmp_dir}"
 
 echo "Checking out ${commit_tag}"
-git checkout "${commit_tag}"
+### git checkout "${commit_tag}"
 
 # Run the TensorFlow configuration script, setting reasonable values for most
 # of the options.
@@ -67,7 +67,7 @@ cat <<EOF >> tensorflow/BUILD
 tf_cc_shared_object(
     name = "libgrpc_runtime.so",
     linkopts = select({
-        "//tensorflow:darwin": [
+        "//tensorflow:macos": [
             "-Wl,-exported_symbols_list",  # This line must be directly followed by the exported_symbols.lds file
             "\$(location //tensorflow:tf_exported_symbols.lds)",
         ],

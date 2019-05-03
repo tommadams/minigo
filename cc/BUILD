@@ -620,6 +620,7 @@ minigo_cc_binary(
         "@com_github_gflags_gflags//:gflags",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
     ],
 )
 
