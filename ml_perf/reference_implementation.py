@@ -64,6 +64,8 @@ flags.DEFINE_boolean('parallel_post_train', False,
 
 flags.DEFINE_string('engine', 'tf', 'The engine to use for selfplay.')
 
+flags.DEFINE_string('tpu_name', None, 'TPU name.')
+
 flags.DEFINE_bool('verbose', False,
                   'If true, log all subprocess output to stderr in addition '
                   'to the logfiles.')
@@ -295,6 +297,7 @@ async def train(state, tf_records):
       '--work_dir={}'.format(fsdb.working_dir()),
       '--export_path={}'.format(model_path),
       '--training_seed={}'.format(state.seed),
+      '--tpu_name={}'.format(FLAGS.tpu_name),
       '--freeze=true')
   # Append the time elapsed from when the RL was started to when this model
   # was trained. GCS files are immutable, so we have to do the append manually.
@@ -429,6 +432,10 @@ def rl_loop():
 
 def main(unused_argv):
   """Run the reinforcement learning loop."""
+
+  if FLAGS.engine.startswith('tpu'):
+    assert FLAGS.tpu_name
+    FLAGS.engine += ':' + FLAGS.tpu_name
 
   print('Wiping dir %s' % FLAGS.base_dir, flush=True)
   try:
