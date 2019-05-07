@@ -430,8 +430,6 @@ def rl_loop():
 def main(unused_argv):
   """Run the reinforcement learning loop."""
 
-  wait(run('echo', 'running'))
-
   print('Wiping dir %s' % FLAGS.base_dir, flush=True)
   try:
     gfile.DeleteRecursively(FLAGS.base_dir)
