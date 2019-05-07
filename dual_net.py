@@ -562,11 +562,10 @@ def _get_nontpu_estimator():
 def _get_tpu_estimator():
     tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
         FLAGS.tpu_name, zone=None, project=None)
-    tpu_grpc_url = tpu_cluster_resolver.get_master()
 
     run_config = tpu_config.RunConfig(
-        master=tpu_grpc_url,
-        evaluation_master=tpu_grpc_url,
+        evaluation_master=FLAGS.tpu_name,
+        cluster=tpu_cluster_resolver,
         model_dir=FLAGS.work_dir,
         save_checkpoints_steps=max(1000, FLAGS.iterations_per_loop),
         save_summary_steps=FLAGS.summary_steps,
