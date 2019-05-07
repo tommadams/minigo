@@ -38,11 +38,12 @@ def get_cmd_name(cmd):
   return os.path.splitext(os.path.basename(path))[0]
 
 
-async def checked_run(*cmd):
+async def checked_run(*cmd, **kwargs):
   """Run the given subprocess command in a coroutine.
 
   Args:
     *cmd: the command to run and its arguments.
+    **kwargs: versbose: {True,False}
 
   Returns:
     The output that the command wrote to stdout.
@@ -58,12 +59,14 @@ async def checked_run(*cmd):
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
 
     # Stream output from the process stdout.
+    verbose = kwargs.get('verbose', False)
     chunks = []
     while True:
       chunk = await p.stdout.read(16 * 1024)
       if not chunk:
         break
-      #sys.stderr.write(chunk.decode('utf-8'))
+      if verbose:
+        sys.stderr.write(chunk.decode('utf-8'))
       chunks.append(chunk)
 
     # Wait for the process to finish, check it was successful & build stdout.

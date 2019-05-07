@@ -64,6 +64,10 @@ flags.DEFINE_boolean('parallel_post_train', False,
 
 flags.DEFINE_string('engine', 'tf', 'The engine to use for selfplay.')
 
+flags.DEFINE_bool('verbose', False,
+                  'If true, log all subprocess output to stderr in addition '
+                  'to the logfiles.')
+
 FLAGS = flags.FLAGS
 
 
@@ -205,7 +209,7 @@ async def run(*cmd):
     RuntimeError: if the command returns a non-zero result.
   """
 
-  stdout = await checked_run(*cmd)
+  stdout = await checked_run(*cmd, verbose=FLAGS.verbose)
 
   log_path = os.path.join(FLAGS.base_dir, get_cmd_name(cmd) + '.log')
   with gfile.Open(log_path, 'a') as f:
@@ -249,7 +253,7 @@ async def selfplay(state, flagfile='selfplay'):
       '--output_dir={}'.format(output_dir),
       '--holdout_dir={}'.format(holdout_dir),
       '--seed={}'.format(state.seed))
-  result = '\n'.join(lines[-6:])
+  result = '\n'.join(lines[-5:])
   logging.info(result)
   stats = parse_win_stats_table(result, 1)[0]
   num_games = stats.total_wins
