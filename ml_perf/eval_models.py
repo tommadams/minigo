@@ -20,9 +20,11 @@ sys.path.insert(0, '.')  # nopep8
 from tensorflow import gfile
 import os
 
-from absl import app
+from absl import app, flags
 from reference_implementation import evaluate_model, wait
 from rl_loop import fsdb
+
+FLAGS = flags.FLAGS
 
 
 def load_train_times():
@@ -33,14 +35,16 @@ def load_train_times():
       line = line.strip()
       if line:
         timestamp, name = line.split(' ')
-        path = 'tf,' + os.path.join(fsdb.models_dir(), name + '.pb')
+        path = '{},{}'.format(FLAGS.engine,
+                              os.path.join(fsdb.models_dir(), name + '.pb'))
         models.append((float(timestamp), name, path))
   return models
 
 
 def main(unused_argv):
   sgf_dir = os.path.join(fsdb.eval_dir(), 'target')
-  target = 'tf,' + os.path.join(fsdb.models_dir(), 'target.pb')
+  target = '{},{}'.format(FLAGS.engine,
+                          os.path.join(fsdb.models_dir(), 'target.pb'))
   models = load_train_times()
   for i, (timestamp, name, path) in enumerate(models):
     winrate = wait(evaluate_model(path, target, sgf_dir, i + 1))

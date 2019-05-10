@@ -168,6 +168,7 @@ def train(*tf_records: "Records to train on"):
                 return preprocessing.get_tpu_input_tensors(
                     params['batch_size'],
                     tf_records,
+                    shuffle_buffer_size=FLAGS.shuffle_buffer_size,
                     random_rotation=True)
         # Hooks are broken with TPUestimator at the moment.
         hooks = []

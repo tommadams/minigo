@@ -217,6 +217,23 @@ minigo_cc_library(
     ],
 )
 
+minigo_cc_binary(
+    name = "dual_net_benchmark",
+    srcs = ["dual_net_benchmark.cc"],
+    deps = [
+        ":batching_dual_net",
+        ":dual_net",
+        ":factory",
+        "//cc:init",
+        "//cc:base",
+        "//cc:position",
+        "//cc:random",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+
 minigo_cc_test(
     name = "batching_dual_net_test",
     size = "small",
