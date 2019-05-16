@@ -170,15 +170,13 @@ def load_train_times():
       line = line.strip()
       if line:
         timestamp, name = line.split(' ')
-        path = '{},{}'.format(FLAGS.engine,
-                              os.path.join(fsdb.models_dir(), name + '.pb'))
+        path = os.path.join(fsdb.models_dir(), name + '.pb')
         models.append((float(timestamp), name, path))
   return models
 
 
 def eval_models():
-  target = '{},{}'.format(FLAGS.engine,
-                          os.path.join(fsdb.models_dir(), 'target.pb'))
+  target = os.path.join(fsdb.models_dir(), 'target.pb')
   models = load_train_times()
   for i, (timestamp, name, path) in enumerate(models):
     win_rate = wait(evaluate_model(path, target, i + 1))
@@ -300,26 +298,42 @@ async def selfplay(state, flagfile='selfplay'):
   output_dir = os.path.join(fsdb.selfplay_dir(), state.output_model_name)
   holdout_dir = os.path.join(fsdb.holdout_dir(), state.output_model_name)
 
-  num_tpus = len(FLAGS.tpu_names)
-  assert FLAGS.selfplay_num_games % num_tpus == 0
-  num_games = FLAGS.selfplay_num_games // num_tpus
-  parallel_games = num_games if num_tpus > 1 else num_games // 2
-
+  if FLAGS.parallel_post_train:
+    tpu_names = FLAGS.tpu_names[1:]
+    assert tpu_names
+  else:
+    tpu_names = FLAGS.tpu_names
+     
+  num_tpus = len(tpu_names)
   awaitables = []
-  for i, tpu_name in enumerate(FLAGS.tpu_names):
+  for i, tpu_name in enumerate(tpu_names):
     model_path = state.best_model_path
     if model_path:
         model_path = 'tpu:{}:{},{}'.format(
             FLAGS.selfplay_tpu_inference_threads, tpu_name, model_path)
     else:
        model_path = 'random:0,0.4:0.4'
+
+    # Calculate the number of games this TPU needs to play, handling the case
+    # where num_games isn't exactly divisble by num_tpus.
+    start = (i * FLAGS.selfplay_num_games) // num_tpus
+    end = ((i + 1) * FLAGS.selfplay_num_games) // num_tpus
+    num_games = end - start
+
+    # If we're playing on 1 TPU, halve the number of games played in parallel
+    # Really, this decision should be based solely on num_games, but this is
+    # good enough for now.
+    if num_tpus == 1:
+      parallel_games = num_games // 2
+    else:
+      parallel_games = num_games
   
     awaitables.append(run(
         'bazel-bin/cc/selfplay',
         '--flagfile={}.flags'.format(os.path.join(FLAGS.flags_dir, flagfile)),
         '--model={}'.format(model_path),
         '--output_dir={}/{}'.format(output_dir, i),
-        '--holdout_dir={}'.format(holdout_dir),
+        '--holdout_dir={}/{}'.format(holdout_dir, i),
         '--num_games={}'.format(num_games),
         '--parallel_games={}'.format(parallel_games),
         '--seed={}'.format(state.seed * num_tpus + i)))
@@ -391,13 +405,12 @@ async def train(state, tf_records):
     f.write(timestamps)
 
 
-async def evaluate_model(eval_model_path, target_model_path, sgf_dir, seed):
+async def evaluate_model(eval_model_path, target_model_path, seed):
   """Evaluate one model against a target.
   Args:
     eval_model_path: the path to the model to evaluate.
     target_model_path: the path to the model to compare to. If None, a random
                        model is used.
-    sgf_dif: directory path to write SGF output to.
     seed: random seed to use when running eval.
 
   Returns:
@@ -442,8 +455,7 @@ async def evaluate_trained_model(state):
   """
 
   return await evaluate_model(
-      state.train_model_path, state.best_model_path,
-      os.path.join(fsdb.eval_dir(), state.train_model_name), state.seed)
+      state.train_model_path, state.best_model_path, state.seed)
 
 
 def rl_loop():
@@ -486,7 +498,7 @@ def rl_loop():
 
     if FLAGS.parallel_post_train:
       # Run eval & selfplay in parallel.
-      model_win_rate, _, _ = wait([
+      model_win_rate, _ = wait([
           evaluate_trained_model(state),
           selfplay(state)])
     else:

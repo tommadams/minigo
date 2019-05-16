@@ -141,7 +141,7 @@ flags.DEFINE_bool(
     help=('Use Swish activation function inplace of ReLu. '
          'https://arxiv.org/pdf/1710.05941.pdf'))
 
-flags.DEFINE_bool('bool_features', True,
+flags.DEFINE_bool('bool_features', False,
                   help=('Use bool input features instead of float'))
 
 

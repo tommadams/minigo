@@ -7,8 +7,8 @@
 --gating_win_rate=0.49
 --window_size=10
 --parallel_post_train=false
---selfplay_tpu_inference_threads=16
---eval_tpu_inference_threads=16
+--selfplay_tpu_inference_threads=20
+--eval_tpu_inference_threads=4
 
 --train_batch_size=4096
 --lr_boundaries=25000

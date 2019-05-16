@@ -32,7 +32,7 @@
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/env.h"
 
-#define BOOL_FEATURES
+// #define BOOL_FEATURES
 
 #ifdef BOOL_FEATURES
 #define FEATURE_TYPE tensorflow::DT_BOOL
