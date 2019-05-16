@@ -71,7 +71,7 @@ def write_tf_examples(filename, tf_examples, serialize=True):
                 writer.write(ex)
 
 
-def batch_parse_tf_example(batch_size, example_batch):
+def batch_parse_tf_example(batch_size, bool_features, example_batch):
     """
     Args:
         example_batch: a batch of tf.Example
@@ -85,8 +85,10 @@ def batch_parse_tf_example(batch_size, example_batch):
     }
     parsed = tf.parse_example(example_batch, features)
     x = tf.decode_raw(parsed['x'], tf.uint8)
-    x = tf.cast(x, tf.float32)
-    ### x = tf.cast(x, tf.bool)
+    if bool_features:
+        x = tf.cast(x, tf.bool)
+    else:
+        x = tf.cast(x, tf.float32)
     x = tf.reshape(x, [batch_size, go.N, go.N,
                        features_lib.NEW_FEATURES_PLANES])
     pi = tf.decode_raw(parsed['pi'], tf.float32)
@@ -182,7 +184,8 @@ def _random_rotation_pure_tf(x_tensor, outcome_tensor):
 def get_input_tensors(batch_size, tf_records, num_repeats=1,
                       shuffle_records=True, shuffle_examples=True,
                       shuffle_buffer_size=None,
-                      filter_amount=0.05, random_rotation=True):
+                      filter_amount=0.05, random_rotation=True,
+                      bool_features=False):
     """Read tf.Records and prepare them for ingestion by dual_net.
 
     See `read_tf_records` for parameter documentation.
@@ -201,7 +204,7 @@ def get_input_tensors(batch_size, tf_records, num_repeats=1,
         interleave=True)
     dataset = dataset.filter(lambda t: tf.equal(tf.shape(t)[0], batch_size))
     dataset = dataset.map(
-        functools.partial(batch_parse_tf_example, batch_size))
+        functools.partial(batch_parse_tf_example, batch_size, bool_features))
     if random_rotation:
         dataset = dataset.map(_random_rotation_pyfunc)
 
@@ -211,7 +214,8 @@ def get_input_tensors(batch_size, tf_records, num_repeats=1,
 def get_tpu_input_tensors(batch_size, tf_records, num_repeats=1,
                           shuffle_records=True, shuffle_examples=True,
                           shuffle_buffer_size=None,
-                          filter_amount=1, random_rotation=True):
+                          filter_amount=1, random_rotation=True,
+                          bool_features=False):
     assert len(tf_records) <= 500, "Use example_buffer to build a golden_chunk"
 
     dataset = read_tf_records(
@@ -225,7 +229,7 @@ def get_tpu_input_tensors(batch_size, tf_records, num_repeats=1,
         interleave=True)
     dataset = dataset.filter(lambda t: tf.equal(tf.shape(t)[0], batch_size))
     dataset = dataset.map(
-        functools.partial(batch_parse_tf_example, batch_size))
+        functools.partial(batch_parse_tf_example, batch_size, bool_features))
 
     # TODO(sethtroisi@): Unify
     if random_rotation:
@@ -243,14 +247,15 @@ def get_tpu_input_tensors(batch_size, tf_records, num_repeats=1,
 def get_tpu_bt_input_tensors(games, games_nr, batch_size, num_repeats=1,
                              number_of_games=500e3,
                              fresh_fraction=0.05,
-                             random_rotation=True):
+                             random_rotation=True,
+                             bool_features=False):
     dataset = bigtable_input.get_unparsed_moves_from_last_n_games(
         games, games_nr, number_of_games)
     dataset = dataset.repeat(num_repeats)
     dataset = dataset.batch(batch_size)
     dataset = dataset.filter(lambda t: tf.equal(tf.shape(t)[0], batch_size))
     dataset = dataset.map(
-        functools.partial(batch_parse_tf_example, batch_size))
+        functools.partial(batch_parse_tf_example, batch_size, bool_features))
     if random_rotation:
         # Unbatch the dataset so we can rotate it
         dataset = dataset.apply(tf.contrib.data.unbatch())

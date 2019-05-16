@@ -81,7 +81,8 @@ def main(unused_argv):
             [in_path],
             shuffle_examples=False,
             random_rotation=False,
-            filter_amount=1.0)
+            filter_amount=1.0,
+            bool_features=FLAGS.bool_features)
 
         with tf.Session() as sess:
             features, labels = ds_iter

@@ -49,12 +49,13 @@ def validate(*tf_records):
     if FLAGS.use_tpu:
         def _input_fn(params):
             return preprocessing.get_tpu_input_tensors(
-                params['batch_size'], tf_records, filter_amount=1.0)
+                params['batch_size'], tf_records, filter_amount=1.0,
+                bool_feaures=FLAGS.bool_features)
     else:
         def _input_fn():
             return preprocessing.get_input_tensors(
                 FLAGS.train_batch_size, tf_records, filter_amount=1.0,
-                shuffle_examples=False)
+                shuffle_examples=False, bool_features=FLAGS.bool_features)
 
     steps = FLAGS.examples_to_validate // FLAGS.train_batch_size
     if FLAGS.use_tpu:

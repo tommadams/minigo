@@ -32,8 +32,14 @@
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/env.h"
 
-using tensorflow::DT_FLOAT;
-using tensorflow::DT_BOOL;
+#define BOOL_FEATURES
+
+#ifdef BOOL_FEATURES
+#define FEATURE_TYPE tensorflow::DT_BOOL
+#else
+#define FEATURE_TYPE tensorflow::DT_FLOAT
+#endif
+
 using tensorflow::Env;
 using tensorflow::GraphDef;
 using tensorflow::NewSession;
@@ -122,17 +128,19 @@ void TpuDualNet::Worker::RunMany(std::vector<const BoardFeatures*> features,
     size_t begin = replica * batch_size;
     size_t end = std::min(num_features, (replica + 1) * batch_size);
 
+#ifdef BOOL_FEATURES
+    auto* data = inputs_[replica].second.flat<bool>().data();
+    for (size_t i = begin; i < end; ++i) {
+      for (auto f : *features[i]) {
+        *data++ = f != 0;
+      }
+    }
+#else
     auto* data = inputs_[replica].second.flat<float>().data();
     for (size_t i = begin; i < end; ++i) {
       data = std::copy(features[i]->begin(), features[i]->end(), data);
     }
-
-    // auto* data = inputs_[replica].second.flat<bool>().data();
-    // for (size_t i = begin; i < end; ++i) {
-    //   for (auto f : *features[i]) {
-    //     *data++ = f != 0;
-    //   }
-    // }
+#endif
   }
 
   // Run the model.
@@ -162,12 +170,8 @@ void TpuDualNet::Worker::Reserve(size_t capacity) {
   for (int i = 0; i < num_replicas_; ++i) {
     inputs_.emplace_back(
         absl::StrCat("pos_tensor_", i),
-        Tensor(DT_FLOAT, TensorShape({static_cast<int>(capacity), kN, kN,
-                                      kNumStoneFeatures})));
-    // inputs_.emplace_back(
-    //     absl::StrCat("pos_tensor_", i),
-    //     Tensor(DT_BOOL, TensorShape({static_cast<int>(capacity), kN, kN,
-    //                                   kNumStoneFeatures})));
+        Tensor(FEATURE_TYPE, TensorShape({static_cast<int>(capacity), kN, kN,
+                                          kNumStoneFeatures})));
   }
   batch_capacity_ = capacity;
 }

@@ -166,14 +166,16 @@ def train(*tf_records: "Records to train on"):
                     games_nr,
                     params['batch_size'],
                     number_of_games=FLAGS.window_size,
-                    random_rotation=True)
+                    random_rotation=True,
+                    bool_features=FLAGS.bool_features)
         else:
             def _input_fn(params):
                 return preprocessing.get_tpu_input_tensors(
                     params['batch_size'],
                     tf_records,
                     shuffle_buffer_size=FLAGS.shuffle_buffer_size,
-                    random_rotation=True)
+                    random_rotation=True,
+                    bool_features=FLAGS.bool_features)
         # Hooks are broken with TPUestimator at the moment.
         hooks = []
     else:
@@ -183,7 +185,8 @@ def train(*tf_records: "Records to train on"):
                 tf_records,
                 filter_amount=FLAGS.filter_amount,
                 shuffle_buffer_size=FLAGS.shuffle_buffer_size,
-                random_rotation=True)
+                random_rotation=True,
+                bool_features=FLAGS.bool_features)
 
         hooks = [UpdateRatioSessionHook(FLAGS.work_dir),
                  EchoStepCounterHook(output_dir=FLAGS.work_dir)]
