@@ -21,36 +21,19 @@ from tensorflow import gfile
 import os
 
 from absl import app, flags
-from reference_implementation import evaluate_model, wait
+from reference_implementation import evaluate_model, load_train_time, eval_models, wait
 from rl_loop import fsdb
 
 FLAGS = flags.FLAGS
 
 
-def load_train_times():
-  models = []
-  path = os.path.join(fsdb.models_dir(), 'train_times.txt')
-  with gfile.Open(path, 'r') as f:
-    for line in f.readlines():
-      line = line.strip()
-      if line:
-        timestamp, name = line.split(' ')
-        path = '{},{}'.format(FLAGS.engine,
-                              os.path.join(fsdb.models_dir(), name + '.pb'))
-        models.append((float(timestamp), name, path))
-  return models
-
-
 def main(unused_argv):
-  sgf_dir = os.path.join(fsdb.eval_dir(), 'target')
-  target = '{},{}'.format(FLAGS.engine,
-                          os.path.join(fsdb.models_dir(), 'target.pb'))
-  models = load_train_times()
-  for i, (timestamp, name, path) in enumerate(models):
-    winrate = wait(evaluate_model(path, target, sgf_dir, i + 1))
-    if winrate >= 0.50:
-      print('Model {} beat target after {}s'.format(name, timestamp))
-      break
+  result = eval_models()
+  if result:
+    iteration, win_rate, timestamp, name, path = result
+    print('Model {} beat target after {}s'.format(name, timestamp))
+  else:
+    print('No model beat the target')
 
 
 if __name__ == '__main__':

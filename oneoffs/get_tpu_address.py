@@ -62,9 +62,12 @@ def main(argv):
         'tpu', 'v1alpha1', credentials=credentials, cache_discovery=False)
     full_name = 'projects/{}/locations/{}/nodes/{}'.format(project, zone, tpu)
     res = service.projects().locations().nodes().get(name=full_name).execute()
-    addr = res['networkEndpoints'][0]['ipAddress']
-    port = res['networkEndpoints'][0]['port']
-    print('grpc://{}:{}'.format(addr, port))
+    addrs = []
+    for endpoint in res['networkEndpoints']:
+        addrs.append('grpc://{}:{}'.format(endpoint['ipAddress'],
+                                           endpoint['port']))
+    print(','.join(addrs))
+        
 
 
 if __name__ == '__main__':

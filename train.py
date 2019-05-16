@@ -39,6 +39,10 @@ flags.DEFINE_integer('steps_to_train', None,
                      'Number of training steps to take. If not set, iterates '
                      'once over training data.')
 
+flags.DEFINE_integer('num_examples', None,
+                     'Total number of examples passed. Used to calculate '
+                     'steps_to_train if it isn\'t set.')
+
 flags.DEFINE_integer('window_size', 500000,
                      'Number of games to include in the window')
 
@@ -200,26 +204,11 @@ def train(*tf_records: "Records to train on"):
         print("== Wait cell:", games.read_wait_cell(), flush=True)
 
     try:
-        # TODO(tommadams): avoid recounting the examples each time, it takes
-        # > 25 seconds.
-        # Either:
-        #  - pass max_steps=sys.maxsize and catch the iteration error that
-        #    gets thrown. This is the preferable option if it actually works.
-        #  - otherwise, keep track of the number of examples in each chunk in
-        #    reference_implementation.py and pass to tray.py via a new
-        #    num_examples flags.
-        if FLAGS.use_tpu and not steps:
-            with utils.logged_timer('Counting examples'):
-               TF_RECORD_CONFIG = tf.python_io.TFRecordOptions(
-                   tf.python_io.TFRecordCompressionType.ZLIB)
-               with tf.Session():
-                   num_examples = 0
-                   for path in tf_records:
-                       records = tf.python_io.tf_record_iterator(
-                           path, TF_RECORD_CONFIG)
-                       num_examples += sum(1 for _ in records)
-            # The extra divide by 8 is to account for the the 8 TPU cores.
-            steps = math.floor(num_examples / FLAGS.train_batch_size / 8)
+        if not steps and FLAGS.num_examples:
+            batch_size = FLAGS.train_batch_size
+            if FLAGS.use_tpu:
+                batch_size *= FLAGS.num_tpu_cores
+            steps = math.floor(FLAGS.num_examples / batch_size)
 
         estimator.train(_input_fn, steps=steps, hooks=hooks)
         if FLAGS.use_bt:

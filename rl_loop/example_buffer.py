@@ -96,6 +96,7 @@ class ExampleBuffer():
             res = tqdm(pool.imap(self.func, games), total=len(games))
             self.examples.extend(itertools.chain.from_iterable(res))
         print("Got", len(self.examples), "examples")
+        return len(self.examples)
 
     def update(self, new_games):
         """ new_games is a list of .tfrecord.zz new game records. """

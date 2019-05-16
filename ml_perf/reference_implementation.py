@@ -28,6 +28,7 @@ import subprocess
 import tensorflow as tf
 import time
 from ml_perf.utils import *
+from ml_perf.mlp_log import mlperf_print
 
 from absl import app, flags
 from rl_loop import example_buffer, fsdb
@@ -59,12 +60,25 @@ flags.DEFINE_integer('window_size', 10,
                      'Maximum number of recent selfplay rounds to train on.')
 
 flags.DEFINE_boolean('parallel_post_train', False,
-                     'If true, run the post-training stages (eval, validation '
-                     '& selfplay) in parallel.')
+                     'If true, run the post-training stages (eval & selfplay) '
+                     'in parallel.')
 
-flags.DEFINE_string('engine', 'tf', 'The engine to use for selfplay.')
+flags.DEFINE_list('tpu_names', None, 'List of TPU names.')
 
-flags.DEFINE_string('tpu_name', None, 'TPU name.')
+# Eval & selfplay flags.
+flags.DEFINE_integer('selfplay_tpu_inference_threads', 16,
+                     'Number of inference threads to use for selfplay.')
+flags.DEFINE_integer('eval_tpu_inference_threads', 2,
+                     'Number of inference threads to use for eval.')
+flags.DEFINE_integer('selfplay_num_games', 4096, '')
+flags.DEFINE_integer('eval_num_games', 100, '')
+
+# Training flags.
+flags.DEFINE_integer('train_batch_size', 4096, '')
+flags.DEFINE_multi_integer('lr_boundaries', [400000, 600000],
+                           'The number of steps at which the learning rate will decay')
+flags.DEFINE_multi_float('lr_rates', [0.01, 0.001, 0.0001],
+                         'The different learning rates')
 
 flags.DEFINE_bool('verbose', False,
                   'If true, log all subprocess output to stderr in addition '
@@ -92,6 +106,9 @@ class State:
 
     self.best_model_name = None
 
+    # Number of examples in each training chunk.
+    self.num_examples = {}
+
   @property
   def output_model_name(self):
     return '%06d-%06d' % (self.iter_num, self.gen_num)
@@ -103,16 +120,15 @@ class State:
   @property
   def best_model_path(self):
     if self.best_model_name is None:
-      # We don't have a good model yet, use a random fake model implementation.
-      return 'random:0,0.4:0.4'
+      return None
     else:
-      return '{},{}.pb'.format(
-         FLAGS.engine, os.path.join(fsdb.models_dir(), self.best_model_name))
+      return '{}.pb'.format(
+         os.path.join(fsdb.models_dir(), self.best_model_name))
 
   @property
   def train_model_path(self):
-    return '{},{}.pb'.format(
-         FLAGS.engine, os.path.join(fsdb.models_dir(), self.train_model_name))
+    return '{}.pb'.format(
+         os.path.join(fsdb.models_dir(), self.train_model_name))
 
   @property
   def seed(self):
@@ -146,6 +162,35 @@ class WinStats:
     self.total_wins = self.black_wins.total + self.white_wins.total
 
 
+def load_train_times():
+  models = []
+  path = os.path.join(fsdb.models_dir(), 'train_times.txt')
+  with gfile.Open(path, 'r') as f:
+    for line in f.readlines():
+      line = line.strip()
+      if line:
+        timestamp, name = line.split(' ')
+        path = '{},{}'.format(FLAGS.engine,
+                              os.path.join(fsdb.models_dir(), name + '.pb'))
+        models.append((float(timestamp), name, path))
+  return models
+
+
+def eval_models():
+  target = '{},{}'.format(FLAGS.engine,
+                          os.path.join(fsdb.models_dir(), 'target.pb'))
+  models = load_train_times()
+  for i, (timestamp, name, path) in enumerate(models):
+    win_rate = wait(evaluate_model(path, target, i + 1))
+    if win_rate >= 0.50:
+      mlperf_print('eval_result', None, metadata={'iteration': i + 1,
+                                                  'timestamp': timestamp})
+      return (i, win_rate, timestamp, name, path)
+  mlperf_print('eval_result', None, metadata={'iteration': len(models),
+                                              'timestamp': 0})
+  return None
+
+
 def initialize_from_checkpoint(state):
   """Initialize the reinforcement learning loop from a checkpoint."""
 
@@ -159,26 +204,33 @@ def initialize_from_checkpoint(state):
 
   # Copy the latest trained model into the models directory and use it on the
   # first round of selfplay.
-  print("Copying checkpoint")
+  print('Copying checkpoint')
   state.best_model_name = 'checkpoint'
   gfile.Copy(start_model_path,
              os.path.join(fsdb.models_dir(), state.best_model_name + '.pb'))
 
   # Copy the golden chunks.
-  print("Copying golden chunks")
+  print('Copying golden chunks')
+  TF_RECORD_CONFIG = tf.python_io.TFRecordOptions(
+      tf.python_io.TFRecordCompressionType.ZLIB)
   golden_chunks_dir = os.path.join(FLAGS.checkpoint_dir, 'golden_chunks')
-  for basename in os.listdir(golden_chunks_dir):
-    gfile.Copy(os.path.join(golden_chunks_dir, basename),
-               os.path.join(fsdb.golden_chunk_dir(), basename))
+  with tf.Session():
+    for basename in os.listdir(golden_chunks_dir):
+      src_path = os.path.join(golden_chunks_dir, basename)
+      dst_path = os.path.join(fsdb.golden_chunk_dir(), basename)
+      gfile.Copy(src_path, dst_path)
+      records = tf.python_io.tf_record_iterator(src_path, TF_RECORD_CONFIG)
+      state.num_examples[basename] = sum(1 for _ in records)
 
   # Copy the training files.
-  print("Copying training files")
+  print('Copying training files')
   work_dir = os.path.join(FLAGS.checkpoint_dir, 'work_dir')
   for basename in os.listdir(work_dir):
-    gfile.Copy(os.path.join(work_dir, basename),
-               os.path.join(fsdb.working_dir(), basename))
+    src_path = os.path.join(work_dir, basename)
+    dst_path = os.path.join(fsdb.working_dir(), basename)
+    gfile.Copy(src_path, dst_path)
 
-  print("Checkpoint initialized")
+  print('Checkpoint initialized')
 
 def parse_win_stats_table(stats_str, num_lines):
   result = []
@@ -248,23 +300,41 @@ async def selfplay(state, flagfile='selfplay'):
   output_dir = os.path.join(fsdb.selfplay_dir(), state.output_model_name)
   holdout_dir = os.path.join(fsdb.holdout_dir(), state.output_model_name)
 
-  lines = await run(
-      'bazel-bin/cc/selfplay',
-      '--flagfile={}.flags'.format(os.path.join(FLAGS.flags_dir, flagfile)),
-      '--model={}'.format(state.best_model_path),
-      '--output_dir={}'.format(output_dir),
-      '--holdout_dir={}'.format(holdout_dir),
-      '--seed={}'.format(state.seed))
-  result = '\n'.join(lines[-5:])
-  logging.info(result)
-  stats = parse_win_stats_table(result, 1)[0]
-  num_games = stats.total_wins
-  logging.info('Black won %0.3f, white won %0.3f',
-               stats.black_wins.total / num_games,
-               stats.white_wins.total / num_games)
+  num_tpus = len(FLAGS.tpu_names)
+  assert FLAGS.selfplay_num_games % num_tpus == 0
+  num_games = FLAGS.selfplay_num_games // num_tpus
+  parallel_games = num_games if num_tpus > 1 else num_games // 2
+
+  awaitables = []
+  for i, tpu_name in enumerate(FLAGS.tpu_names):
+    model_path = state.best_model_path
+    if model_path:
+        model_path = 'tpu:{}:{},{}'.format(
+            FLAGS.selfplay_tpu_inference_threads, tpu_name, model_path)
+    else:
+       model_path = 'random:0,0.4:0.4'
+  
+    awaitables.append(run(
+        'bazel-bin/cc/selfplay',
+        '--flagfile={}.flags'.format(os.path.join(FLAGS.flags_dir, flagfile)),
+        '--model={}'.format(model_path),
+        '--output_dir={}/{}'.format(output_dir, i),
+        '--holdout_dir={}'.format(holdout_dir),
+        '--num_games={}'.format(num_games),
+        '--parallel_games={}'.format(parallel_games),
+        '--seed={}'.format(state.seed * num_tpus + i)))
+
+  for lines in await asyncio.gather(*awaitables):
+    result = '\n'.join(lines[-5:])
+    logging.info(result)
+    stats = parse_win_stats_table(result, 1)[0]
+    num_games = stats.total_wins
+    logging.info('Black won %0.3f, white won %0.3f',
+                 stats.black_wins.total / num_games,
+                 stats.white_wins.total / num_games)
 
   # Write examples to a single record.
-  pattern = os.path.join(output_dir, '*', '*.zz')
+  pattern = os.path.join(output_dir, '*/*', '*.zz')
   random.seed(state.seed)
   tf.set_random_seed(state.seed)
   np.random.seed(state.seed)
@@ -277,9 +347,10 @@ async def selfplay(state, flagfile='selfplay'):
   # TODO(tommadams): parallel_fill is currently non-deterministic. Make it not
   # so.
   logging.info('Writing golden chunk from "{}"'.format(pattern))
-  buffer.parallel_fill(tf.gfile.Glob(pattern))
-  buffer.flush(os.path.join(fsdb.golden_chunk_dir(),
-                            state.output_model_name + '.tfrecord.zz'))
+  num_examples = buffer.parallel_fill(tf.gfile.Glob(pattern))
+  basename = state.output_model_name + '.tfrecord.zz'
+  buffer.flush(os.path.join(fsdb.golden_chunk_dir(), basename))
+  state.num_examples[basename] = num_examples
 
 
 async def train(state, tf_records):
@@ -290,14 +361,21 @@ async def train(state, tf_records):
     tf_records: a list of paths to TensorFlow records to train on.
   """
 
+  num_examples = 0
+  for record in tf_records:
+    num_examples += state.num_examples[os.path.basename(record)]
   model_path = os.path.join(fsdb.models_dir(), state.train_model_name)
+  lr_boundaries = ['--lr_boundaries={}'.format(x) for x in FLAGS.lr_boundaries]
+  lr_rates = ['--lr_rates={}'.format(x) for x in FLAGS.lr_rates]
   await run(
-      'python3', 'train.py', *tf_records,
+      'python3', 'train.py', *tf_records, *lr_boundaries, *lr_rates,
       '--flagfile={}'.format(os.path.join(FLAGS.flags_dir, 'train.flags')),
       '--work_dir={}'.format(fsdb.working_dir()),
+      '--train_batch_size={}'.format(FLAGS.train_batch_size),
       '--export_path={}'.format(model_path),
+      '--num_examples={}'.format(num_examples),
       '--training_seed={}'.format(state.seed),
-      '--tpu_name={}'.format(FLAGS.tpu_name),
+      '--tpu_name={}'.format(FLAGS.tpu_names[0]),
       '--freeze=true')
   # Append the time elapsed from when the RL was started to when this model
   # was trained. GCS files are immutable, so we have to do the append manually.
@@ -313,30 +391,12 @@ async def train(state, tf_records):
     f.write(timestamps)
 
 
-async def validate(state, holdout_glob):
-  """Validate the trained model against holdout games.
-
-  Args:
-    state: the RL loop State instance.
-    holdout_glob: a glob that matches holdout games.
-  """
-
-  if not tf.gfile.Glob(holdout_glob):
-    print('Glob "{}" didn\'t match any files, skipping validation'.format(
-          holdout_glob))
-  else:
-    await run(
-        'python3', 'validate.py', holdout_glob,
-        '--flagfile={}'.format(os.path.join(FLAGS.flags_dir, 'validate.flags')),
-        '--work_dir={}'.format(fsdb.working_dir()))
-
-
 async def evaluate_model(eval_model_path, target_model_path, sgf_dir, seed):
   """Evaluate one model against a target.
-
   Args:
     eval_model_path: the path to the model to evaluate.
-    target_model_path: the path to the model to compare to.
+    target_model_path: the path to the model to compare to. If None, a random
+                       model is used.
     sgf_dif: directory path to write SGF output to.
     seed: random seed to use when running eval.
 
@@ -344,12 +404,22 @@ async def evaluate_model(eval_model_path, target_model_path, sgf_dir, seed):
     The win-rate of eval_model against target_model in the range [0, 1].
   """
 
+  tpu_name = FLAGS.tpu_names[0]
+  if target_model_path:
+      target_model_path = 'tpu:{}:{},{}'.format(
+          FLAGS.eval_tpu_inference_threads, tpu_name, target_model_path)
+  else:
+     target_model_path = 'random:0,0.4:0.4'
+
+  eval_model_path = 'tpu:{}:{},{}'.format(
+      FLAGS.eval_tpu_inference_threads, tpu_name, eval_model_path)
+
   lines = await run(
       'bazel-bin/cc/eval',
       '--flagfile={}'.format(os.path.join(FLAGS.flags_dir, 'eval.flags')),
       '--model={}'.format(eval_model_path),
       '--model_two={}'.format(target_model_path),
-      '--sgf_dir={}'.format(sgf_dir),
+      '--parallel_games={}'.format(FLAGS.eval_num_games),
       '--seed={}'.format(seed))
   result = '\n'.join(lines[-7:])
   logging.info(result)
@@ -362,10 +432,13 @@ async def evaluate_model(eval_model_path, target_model_path, sgf_dir, seed):
 
 
 async def evaluate_trained_model(state):
-  """Evaluate the most recently trained model against the current best model.
+  """Evaluate one model against a target.
 
   Args:
     state: the RL loop State instance.
+
+  Returns:
+    The win-rate of eval_model against target_model in the range [0, 1].
   """
 
   return await evaluate_model(
@@ -399,28 +472,26 @@ def rl_loop():
     # Run selfplay using the new model.
     wait(selfplay(state))
 
+  mlperf_print('init_stop', None)
+  mlperf_print('run_start', None)
   # Now start the full training loop.
   while state.iter_num <= FLAGS.iterations:
-    # Build holdout glob before incrementing the iteration number because we
-    # want to run validation on the previous generation.
-    holdout_glob = os.path.join(fsdb.holdout_dir(), '%06d-*' % state.iter_num,
-                                '*')
-
+    mlperf_print('epoch_start', None)
     # Train on shuffled game data from recent selfplay rounds.
     tf_records = get_golden_chunk_records()
     state.iter_num += 1
     wait(train(state, tf_records))
 
+    mlperf_print('save_model', None, metadata={'iteration': state.iter_num})
+
     if FLAGS.parallel_post_train:
-      # Run eval, validation & selfplay in parallel.
+      # Run eval & selfplay in parallel.
       model_win_rate, _, _ = wait([
           evaluate_trained_model(state),
-          validate(state, holdout_glob),
           selfplay(state)])
     else:
-      # Run eval, validation & selfplay sequentially.
+      # Run eval & selfplay sequentially.
       model_win_rate = wait(evaluate_trained_model(state))
-      wait(validate(state, holdout_glob))
       wait(selfplay(state))
 
     if model_win_rate >= FLAGS.gating_win_rate:
@@ -428,14 +499,11 @@ def rl_loop():
       # number.
       state.best_model_name = state.train_model_name
       state.gen_num += 1
+    mlperf_print('epoch_stop', None)
 
 
 def main(unused_argv):
   """Run the reinforcement learning loop."""
-
-  if FLAGS.engine.startswith('tpu'):
-    assert FLAGS.tpu_name
-    FLAGS.engine += ':' + FLAGS.tpu_name
 
   print('Wiping dir %s' % FLAGS.base_dir, flush=True)
   try:
@@ -452,27 +520,39 @@ def main(unused_argv):
   for d in dirs:
     ensure_dir_exists(d);
 
+  logging.getLogger().addHandler(
+      logging.FileHandler(os.path.join(FLAGS.base_dir, 'rl_loop.log')))
+  formatter = logging.Formatter('')
+  for handler in logging.getLogger().handlers:
+    handler.setFormatter(formatter)
+
+  mlperf_print('submission_org', 'google')
+  mlperf_print('submission_platform', '4xTPUs')
+  mlperf_print('submission_division', 'open')
+  mlperf_print('submission_status', 'cloud')
+  mlperf_print('submission_benchmark', 'minigo')
+  mlperf_print('cache_clear', 'true')
+  mlperf_print('init_start', None)
+
   # Copy the flag files so there's no chance of them getting accidentally
   # overwritten while the RL loop is running.
-  print("Copying flags")
+  print('Copying flags')
   flags_dir = os.path.join(FLAGS.base_dir, 'flags')
   shutil.copytree(FLAGS.flags_dir, flags_dir)
   FLAGS.flags_dir = flags_dir
 
   # Copy the target model to the models directory so we can find it easily.
-  print("Copying target model")
+  print('Copying target model')
   tf.gfile.Copy(FLAGS.target_path, os.path.join(fsdb.models_dir(), 'target.pb'))
-
-  logging.getLogger().addHandler(
-      logging.FileHandler(os.path.join(FLAGS.base_dir, 'rl_loop.log')))
-  formatter = logging.Formatter('[%(asctime)s] %(message)s',
-                                '%Y-%m-%d %H:%M:%S')
-  for handler in logging.getLogger().handlers:
-    handler.setFormatter(formatter)
 
   with logged_timer('Total time'):
     try:
       rl_loop()
+      result = eval_models()
+      if result:
+        mlperf_print('run_stop', None, metadata={'status': 'success'})
+      else:
+        mlperf_print('run_stop', None, metadata={'status': 'aborted'})
     finally:
       asyncio.get_event_loop().close()
 
