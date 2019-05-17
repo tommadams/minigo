@@ -9,57 +9,80 @@ The model plays games against itself and uses these games to improve play.
 
 # 2. Directions
 ### Steps to configure machine
-To setup the environment on Ubuntu 16.04 (16 CPUs, one P100, 100 GB disk), you can use these
-commands. This may vary on a different operating system or graphics card.
 
 ```
-    # Clone repository
-    git clone https://github.com/tensorflow/minigo
-    # Note: This will eventually change to:
-    # git clone http://github.com/mlperf/training
+    # Set the required environment variables.
+    GCE_PROJECT=<your GCE project name>
+    GCE_ZONE=<GCE zone to run in>
+    TPU_1=<unique TPU name>
+    TPU_2=<unique TPU name>
+    TPU_3=<unique TPU name>
+    TPU_4=<unique TPU name>
+    TF_VERSION=<TPU tensorflow version>
 
-    # Install dependencies
+    # Bring up 3 Cloud TPUs.
+    for TPU in ${TPU_2} ${TPU_3} ${TPU_4}; do
+      ctpu up \
+        --project=${GCE_PROJECT} \
+        --zone=${GCE_ZONE} \
+        --name=${TPU} \
+        --tpu-only=true \
+        --tpu-size=v3-8 \
+        --tf-version=${TF_VERSION}
+    done
+
+    # Bring up 1 Cloud TPU with attached VM.
+    # This command also connects to the VM once it's started.
+    ctpu up \
+      --project=${GCE_PROJECT} \
+      --zone=${ZONE} \
+      --name=${TPU_1} \
+      --tpu-only=false \
+      --tpu-size=v3-8 \
+      --tf-version=${TF_VERSION}
+
+    # Clone repository.
+    git clone https://github.com/tensorflow/minigo
+
+    # Install dependencies.
     apt-get install -y python3 python3-pip rsync git wget pkg-config zip g++ zlib1g-dev unzip
 
-    # Create a virtualenv (this step is optional but highly recommended).
-    pip3 install virtualenv
-    pip3 install virtualenvwrapper
+    # Create a virtualenv.
+    pip3 install virtualenv virtualenvwrapper
     virtualenv -p /usr/bin/python3 --system-site-packages $HOME/.venvs/minigo
     source $HOME/.venvs/minigo/bin/activate
 
-    # Install Python dependencies
+    # Install Python dependencies.
     pip3 install -r requirements.txt
 
-    # Install Python Tensorflow for GPU
-    # (alternatively use "tensorflow>=1.11,<1.12" for CPU Tensorflow)
-    pip3 install "tensorflow-gpu>=1.11,<1.12"
+    # Install bazel.
+    wget https://github.com/bazelbuild/bazel/releases/download/0.24.1/bazel-0.24.1-installer-linux-x86_64.sh
+    chmod +x bazel-0.24.1-installer-linux-x86_64.sh
+    ./bazel-0.24.1-installer-linux-x86_64.sh
 
-    # Install bazel
-    wget https://github.com/bazelbuild/bazel/releases/download/0.17.1/bazel-0.17.1-installer-linux-x86_64.sh
-    chmod +x bazel-0.17.1-installer-linux-x86_64.sh
-    ./bazel-0.17.1-installer-linux-x86_64.sh
-
-    # Compile TensorFlow C++ libraries
+    # Compile TensorFlow C++ libraries.
     ./cc/configure_tensorflow.sh
 
-    # Compile and run C++ self-play and evaluation binaries
+    # Compile and run C++ self-play and evaluation binaries.
     bazel build  -c opt  --define=tf=1  --define=board_size=9  cc:selfplay  cc:eval
 
-    # Download required files from Google Cloud Storage
-    BOARD_SIZE=9 python ml_perf/get_data.py
+    # Download required files from Google Cloud Storage.
+    BOARD_SIZE=9 python ml_perf/get_data.py \
+      --gcs_tmp_dir=gs://${GCS_BUCKET}/ml_perf/tmp/ \
+      --use_tpu=true \
+      --tpu_name=${TPU_1}
 
-    BASE_DIR=$(pwd)/results/$(date +%Y-%m-%d)
+    BASE_DIR=results/$(date +%Y-%m-%d)
 
-    # Run training loop
-    BOARD_SIZE=9  python  ml_perf/reference_implementation.py \
-      --base_dir=$BASE_DIR \
-      --flagfile=ml_perf/flags/9/rl_loop.flags
+    # Resolve the grpc address of each TPU.
+    TPU_NAMES=$(python oneoffs/get_tpu_address.py --tpu=${TPU_1}),$(python oneoffs/get_tpu_address.py --tpu=${TPU_2}),$(python oneoffs/get_tpu_address.py --tpu=${TPU_3}),$(python oneoffs/get_tpu_address.py --tpu=${TPU_4})
 
-    # Once the training loop has finished, run model evaluation to find the
-    # first trained model that's better than the target
-    BOARD_SIZE=9  python  ml_perf/eval_models.py \
-      --base_dir=$BASE_DIR \
-      --flags_dir=ml_perf/flags/9
+    # Run training loop.
+    BOARD_SIZE=9 python ml_perf/reference_implementation.py \
+      --base_dir=${BASE_DIR} \
+      --flagfile=ml_perf/flags/9/rl_loop.flags \
+      --bucket_name=${GCS_BUCKET} \
+      --tpu_names=${TPU_NAMES}
 ```
 
 ### Steps to download and verify data

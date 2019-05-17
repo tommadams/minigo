@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import tensorflow as tf
+import traceback
 import time
 import dual_net  # Needed for some FLAGS
 from ml_perf.utils import *
@@ -246,6 +247,15 @@ def parse_win_stats_table(stats_str, num_lines):
   return result
 
 
+async def append_to_log(log_path, cmd_str, output_str):
+  async with run_lock:
+    with gfile.Open(log_path, 'a') as f:
+      f.write(cmd_str)
+      f.write('\n')
+      f.write(output_str)
+      f.write('\n')
+
+
 async def run(*cmd):
   """Run the given subprocess command in a coroutine.
 
@@ -260,16 +270,16 @@ async def run(*cmd):
     RuntimeError: if the command returns a non-zero result.
   """
 
-  stdout = await checked_run(*cmd, verbose=FLAGS.verbose)
-
   log_path = os.path.join(FLAGS.base_dir, get_cmd_name(cmd) + '.log')
+  cmd_str = expand_cmd_str(cmd)
 
-  async with run_lock:
-    with gfile.Open(log_path, 'a') as f:
-      f.write(expand_cmd_str(cmd))
-      f.write('\n')
-      f.write(stdout)
-      f.write('\n')
+  try:
+    stdout = await checked_run(*cmd, verbose=FLAGS.verbose)
+    await append_to_log(log_path, cmd_str, stdout)
+  except Exception as e:
+    error_str = 'ERROR: {}'.format(traceback.format_exc())
+    await append_to_log(log_path, cmd_str, error_str)
+    raise
 
   # Split stdout into lines.
   return stdout.split('\n')
@@ -487,6 +497,7 @@ def rl_loop():
 
   mlperf_print('init_stop', None)
   mlperf_print('run_start', None)
+  state.start_time = time.time()
   # Now start the full training loop.
   while state.iter_num <= FLAGS.iterations:
     mlperf_print('epoch_start', None)
@@ -539,12 +550,12 @@ def main(unused_argv):
   for handler in logging.getLogger().handlers:
     handler.setFormatter(formatter)
 
-  mlperf_print('submission_org', 'google')
-  mlperf_print('submission_platform', '4xTPUs')
-  mlperf_print('submission_division', 'open')
-  mlperf_print('submission_status', 'cloud')
   mlperf_print('submission_benchmark', 'minigo')
-  mlperf_print('cache_clear', 'true')
+  mlperf_print('submission_division', 'closed')
+  mlperf_print('submission_org', 'google')
+  mlperf_print('submission_platform', 'tpu-4x-v3-8')
+  mlperf_print('submission_status', 'cloud')
+  mlperf_print('cache_clear', None)
   mlperf_print('global_batch_size', FLAGS.num_tpu_cores * FLAGS.train_batch_size)
   mlperf_print('opt_base_learning_rate', FLAGS.lr_rates[0])
   mlperf_print('opt_learning_rate_decay_boundary_steps', FLAGS.lr_boundaries)

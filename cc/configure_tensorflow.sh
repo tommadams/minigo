@@ -15,7 +15,7 @@ rm -rf ${dst_dir}/*
 mkdir -p ${dst_dir}
 
 # TODO(tommadams): we should probably switch to Clang at some point.
-commit_tag="v1.11.0"
+commit_tag="v1.13.1"
 
 echo "Cloning tensorflow to ${tmp_dir}"
 git clone https://github.com/tensorflow/tensorflow "${tmp_dir}"
@@ -92,21 +92,21 @@ bazel build -c opt --config=opt --copt="${cc_opt_flags}" \
     //tensorflow:libtensorflow_framework.so
 
 echo "Copying tensorflow libraries to ${dst_dir}"
-cp bazel-bin/tensorflow/{libgrpc_runtime,libtensorflow_*}.so "${dst_dir}"
+cp bazel-bin/tensorflow/{libgrpc_runtime,libtensorflow_*}.so* "${dst_dir}"
 
-echo "Building toco"
-bazel build -c opt --config=opt --copt="${cc_opt_flags}" //tensorflow/contrib/lite/toco:toco
-cp bazel-bin/tensorflow/contrib/lite/toco/toco "${dst_dir}"
-
-echo "Building TF Lite"
-
-./tensorflow/contrib/lite/tools/make/download_dependencies.sh
-make -j $(nproc) -f tensorflow/contrib/lite/tools/make/Makefile
-cp tensorflow/contrib/lite/tools/make/gen/linux_x86_64/lib/libtensorflow-lite.a $dst_dir/libtensorflow_lite.a
-for dir in contrib/lite contrib/lite/kernels contrib/lite/profiling contrib/lite/schema; do
-  mkdir -p $dst_dir/tensorflow/$dir
-  cp tensorflow/$dir/*.h $dst_dir/tensorflow/$dir/
-done
-cp -r tensorflow/contrib/lite/tools/make/downloads/flatbuffers/include/flatbuffers $dst_dir/
+### echo "Building toco"
+### bazel build -c opt --config=opt --copt="${cc_opt_flags}" //tensorflow/contrib/lite/toco:toco
+### cp bazel-bin/tensorflow/contrib/lite/toco/toco "${dst_dir}"
+### 
+### echo "Building TF Lite"
+### 
+### ./tensorflow/contrib/lite/tools/make/download_dependencies.sh
+### make -j $(nproc) -f tensorflow/contrib/lite/tools/make/Makefile
+### cp tensorflow/contrib/lite/tools/make/gen/linux_x86_64/lib/libtensorflow-lite.a $dst_dir/libtensorflow_lite.a
+### for dir in contrib/lite contrib/lite/kernels contrib/lite/profiling contrib/lite/schema; do
+###   mkdir -p $dst_dir/tensorflow/$dir
+###   cp tensorflow/$dir/*.h $dst_dir/tensorflow/$dir/
+### done
+### cp -r tensorflow/contrib/lite/tools/make/downloads/flatbuffers/include/flatbuffers $dst_dir/
 
 popd
