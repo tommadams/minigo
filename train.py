@@ -192,6 +192,12 @@ def train(*tf_records: "Records to train on"):
                  EchoStepCounterHook(output_dir=FLAGS.work_dir)]
 
     steps = FLAGS.steps_to_train
+    if not steps and FLAGS.num_examples:
+        batch_size = FLAGS.train_batch_size
+        if FLAGS.use_tpu:
+            batch_size *= FLAGS.num_tpu_cores
+        steps = math.floor(FLAGS.num_examples / batch_size)
+
     logging.info("Training, steps = %s, batch = %s -> %s examples",
                  steps or '?', effective_batch_size,
                  (steps * effective_batch_size) if steps else '?')
@@ -207,12 +213,6 @@ def train(*tf_records: "Records to train on"):
         print("== Wait cell:", games.read_wait_cell(), flush=True)
 
     try:
-        if not steps and FLAGS.num_examples:
-            batch_size = FLAGS.train_batch_size
-            if FLAGS.use_tpu:
-                batch_size *= FLAGS.num_tpu_cores
-            steps = math.floor(FLAGS.num_examples / batch_size)
-
         estimator.train(_input_fn, steps=steps, hooks=hooks)
         if FLAGS.use_bt:
             bigtable_input.set_fresh_watermark(games, index_from,

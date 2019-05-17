@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import tensorflow as tf
 import time
+import dual_net  # Needed for some FLAGS
 from ml_perf.utils import *
 from ml_perf.mlp_log import mlperf_print
 
@@ -73,18 +74,16 @@ flags.DEFINE_integer('eval_tpu_inference_threads', 2,
 flags.DEFINE_integer('selfplay_num_games', 4096, '')
 flags.DEFINE_integer('eval_num_games', 100, '')
 
-# Training flags.
-flags.DEFINE_integer('train_batch_size', 4096, '')
-flags.DEFINE_multi_integer('lr_boundaries', [400000, 600000],
-                           'The number of steps at which the learning rate will decay')
-flags.DEFINE_multi_float('lr_rates', [0.01, 0.001, 0.0001],
-                         'The different learning rates')
-
 flags.DEFINE_bool('verbose', False,
                   'If true, log all subprocess output to stderr in addition '
                   'to the logfiles.')
 
+
 FLAGS = flags.FLAGS
+
+
+# Lock used to serialize writing to log files.
+run_lock = asyncio.Lock()
 
 
 class State:
@@ -264,11 +263,13 @@ async def run(*cmd):
   stdout = await checked_run(*cmd, verbose=FLAGS.verbose)
 
   log_path = os.path.join(FLAGS.base_dir, get_cmd_name(cmd) + '.log')
-  with gfile.Open(log_path, 'a') as f:
-    f.write(expand_cmd_str(cmd))
-    f.write('\n')
-    f.write(stdout)
-    f.write('\n')
+
+  async with run_lock:
+    with gfile.Open(log_path, 'a') as f:
+      f.write(expand_cmd_str(cmd))
+      f.write('\n')
+      f.write(stdout)
+      f.write('\n')
 
   # Split stdout into lines.
   return stdout.split('\n')
@@ -544,6 +545,10 @@ def main(unused_argv):
   mlperf_print('submission_status', 'cloud')
   mlperf_print('submission_benchmark', 'minigo')
   mlperf_print('cache_clear', 'true')
+  mlperf_print('global_batch_size', FLAGS.num_tpu_cores * FLAGS.train_batch_size)
+  mlperf_print('opt_base_learning_rate', FLAGS.lr_rates[0])
+  mlperf_print('opt_learning_rate_decay_boundary_steps', FLAGS.lr_boundaries)
+
   mlperf_print('init_start', None)
 
   # Copy the flag files so there's no chance of them getting accidentally
