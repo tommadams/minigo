@@ -331,14 +331,7 @@ async def selfplay(state, flagfile='selfplay'):
     end = ((i + 1) * FLAGS.selfplay_num_games) // num_tpus
     num_games = end - start
 
-    # If we're playing on 1 TPU, halve the number of games played in parallel
-    # Really, this decision should be based solely on num_games, but this is
-    # good enough for now.
-    if num_tpus == 1:
-      parallel_games = num_games // 2
-    else:
-      parallel_games = num_games
-  
+    parallel_games = (num_games + 1) // 2
     awaitables.append(run(
         'bazel-bin/cc/selfplay',
         '--flagfile={}.flags'.format(os.path.join(FLAGS.flags_dir, flagfile)),
