@@ -61,10 +61,6 @@ flags.DEFINE_string('flags_dir', None,
 flags.DEFINE_integer('window_size', 10,
                      'Maximum number of recent selfplay rounds to train on.')
 
-flags.DEFINE_boolean('parallel_post_train', False,
-                     'If true, run the post-training stages (eval & selfplay) '
-                     'in parallel.')
-
 flags.DEFINE_list('tpu_names', None, 'List of TPU names.')
 
 # Eval & selfplay flags.
@@ -74,6 +70,8 @@ flags.DEFINE_integer('eval_tpu_inference_threads', 2,
                      'Number of inference threads to use for eval.')
 flags.DEFINE_integer('selfplay_num_games', 4096, '')
 flags.DEFINE_integer('eval_num_games', 100, '')
+flags.DEFINE_float('disable_resign_pct', 0.1,
+                   'Fraction of selfplay games to disable resignation for.')
 
 flags.DEFINE_bool('verbose', False,
                   'If true, log all subprocess output to stderr in addition '
@@ -103,6 +101,7 @@ class State:
 
     self.iter_num = 0
     self.gen_num = 0
+    self._seed = 0
 
     self.best_model_name = None
 
@@ -118,6 +117,10 @@ class State:
     return '%06d-%06d' % (self.iter_num, self.gen_num + 1)
 
   @property
+  def tmp_model_name(self):
+    return '%06d-tmp' % self.iter_num
+
+  @property
   def best_model_path(self):
     if self.best_model_name is None:
       return None
@@ -131,8 +134,13 @@ class State:
          os.path.join(fsdb.models_dir(), self.train_model_name))
 
   @property
-  def seed(self):
-    return self.iter_num + 1
+  def tmp_model_path(self):
+    return '{}.pb'.format(
+         os.path.join(fsdb.models_dir(), self.tmp_model_name))
+
+  def get_next_seed(self):
+    self._seed += 1
+    return self._seed
 
 
 class ColorWinStats:
@@ -180,6 +188,7 @@ def eval_models():
   models = load_train_times()
   for i, (timestamp, name, path) in enumerate(models):
     win_rate = wait(evaluate_model(path, target, i + 1))
+    logging.info('i:%d ts:%s n:%s wr:%f', i, timestamp, name, win_rate)
     if win_rate >= 0.50:
       mlperf_print('eval_result', None, metadata={'iteration': i + 1,
                                                   'timestamp': timestamp})
@@ -309,11 +318,7 @@ async def selfplay(state, flagfile='selfplay'):
   output_dir = os.path.join(fsdb.selfplay_dir(), state.output_model_name)
   holdout_dir = os.path.join(fsdb.holdout_dir(), state.output_model_name)
 
-  if FLAGS.parallel_post_train:
-    tpu_names = FLAGS.tpu_names[1:]
-    assert tpu_names
-  else:
-    tpu_names = FLAGS.tpu_names
+  tpu_names = FLAGS.tpu_names
      
   num_tpus = len(tpu_names)
   awaitables = []
@@ -325,22 +330,34 @@ async def selfplay(state, flagfile='selfplay'):
     else:
        model_path = 'random:0,0.4:0.4'
 
-    # Calculate the number of games this TPU needs to play, handling the case
-    # where num_games isn't exactly divisble by num_tpus.
-    start = (i * FLAGS.selfplay_num_games) // num_tpus
-    end = ((i + 1) * FLAGS.selfplay_num_games) // num_tpus
-    num_games = end - start
+    # Play all calibration (aka resign disabled) games on one TPU with each thread
+    # playing one game.
+    num_calibration_games = round(
+        FLAGS.selfplay_num_games * FLAGS.disable_resign_pct)
+    num_normal_games = FLAGS.selfplay_num_games - num_calibration_games
+    if i == 0:
+      num_games = num_calibration_games
+      parallel_games = num_games
+      disable_resign_pct=1
+    else:
+      # Calculate the number of games this TPU needs to play, handling the case
+      # where num_normal_games isn't exactly divisble by num_tpus.
+      start = ((i - 1) * num_normal_games) // (num_tpus - 1)
+      end = (i * num_normal_games) // (num_tpus - 1)
+      num_games = end - start
+      parallel_games = (num_games + 1) // 2
+      disable_resign_pct=0
 
-    parallel_games = (num_games + 1) // 2
     awaitables.append(run(
         'bazel-bin/cc/selfplay',
         '--flagfile={}.flags'.format(os.path.join(FLAGS.flags_dir, flagfile)),
         '--model={}'.format(model_path),
         '--output_dir={}/{}'.format(output_dir, i),
         '--holdout_dir={}/{}'.format(holdout_dir, i),
+        '--disable_resign_pct={}'.format(disable_resign_pct),
         '--num_games={}'.format(num_games),
         '--parallel_games={}'.format(parallel_games),
-        '--seed={}'.format(state.seed * num_tpus + i)))
+        '--seed={}'.format(state.get_next_seed())))
 
   for lines in await asyncio.gather(*awaitables):
     result = '\n'.join(lines[-5:])
@@ -353,9 +370,10 @@ async def selfplay(state, flagfile='selfplay'):
 
   # Write examples to a single record.
   pattern = os.path.join(output_dir, '*/*', '*.zz')
-  random.seed(state.seed)
-  tf.set_random_seed(state.seed)
-  np.random.seed(state.seed)
+  seed = state.get_next_seed()
+  random.seed(seed)
+  tf.set_random_seed(seed)
+  np.random.seed(seed)
   # TODO(tommadams): This method of generating one golden chunk per generation
   # is sub-optimal because each chunk gets reused multiple times for training,
   # introducing bias. Instead, a fresh dataset should be uniformly sampled out
@@ -371,7 +389,7 @@ async def selfplay(state, flagfile='selfplay'):
   state.num_examples[basename] = num_examples
 
 
-async def train(state, tf_records):
+async def train(state, tf_records, export_name):
   """Run training and write a new model to the fsdb models_dir.
 
   Args:
@@ -382,7 +400,7 @@ async def train(state, tf_records):
   num_examples = 0
   for record in tf_records:
     num_examples += state.num_examples[os.path.basename(record)]
-  model_path = os.path.join(fsdb.models_dir(), state.train_model_name)
+  model_path = os.path.join(fsdb.models_dir(), export_name)
   lr_boundaries = ['--lr_boundaries={}'.format(x) for x in FLAGS.lr_boundaries]
   lr_rates = ['--lr_rates={}'.format(x) for x in FLAGS.lr_rates]
   await run(
@@ -392,19 +410,23 @@ async def train(state, tf_records):
       '--train_batch_size={}'.format(FLAGS.train_batch_size),
       '--export_path={}'.format(model_path),
       '--num_examples={}'.format(num_examples),
-      '--training_seed={}'.format(state.seed),
+      '--training_seed={}'.format(state.get_next_seed()),
       '--tpu_name={}'.format(FLAGS.tpu_names[0]),
       '--freeze=true')
+  elapsed = time.time() - state.start_time
+  return elapsed
+
+
+def append_timestamp(elapsed, model_name):
   # Append the time elapsed from when the RL was started to when this model
   # was trained. GCS files are immutable, so we have to do the append manually.
-  elapsed = time.time() - state.start_time
   timestamps_path = os.path.join(fsdb.models_dir(), 'train_times.txt')
   try:
     with gfile.Open(timestamps_path, 'r') as f:
       timestamps = f.read()
   except tf.errors.NotFoundError:
     timestamps = ''
-  timestamps += '{:.3f} {}\n'.format(elapsed, state.train_model_name)
+  timestamps += '{:.3f} {}\n'.format(elapsed, model_name)
   with gfile.Open(timestamps_path, 'w') as f:
     f.write(timestamps)
 
@@ -421,12 +443,9 @@ async def evaluate_model(eval_model_path, target_model_path, seed):
     The win-rate of eval_model against target_model in the range [0, 1].
   """
 
-  tpu_name = FLAGS.tpu_names[0]
-  if target_model_path:
-      target_model_path = 'tpu:{}:{},{}'.format(
-          FLAGS.eval_tpu_inference_threads, tpu_name, target_model_path)
-  else:
-     target_model_path = 'random:0,0.4:0.4'
+  tpu_name = FLAGS.tpu_names[1]
+  target_model_path = 'tpu:{}:{},{}'.format(
+      FLAGS.eval_tpu_inference_threads, tpu_name, target_model_path)
 
   eval_model_path = 'tpu:{}:{},{}'.format(
       FLAGS.eval_tpu_inference_threads, tpu_name, eval_model_path)
@@ -446,20 +465,6 @@ async def evaluate_model(eval_model_path, target_model_path, seed):
   logging.info('Win rate %s vs %s: %.3f', eval_stats.model_name,
                target_stats.model_name, win_rate)
   return win_rate
-
-
-async def evaluate_trained_model(state):
-  """Evaluate one model against a target.
-
-  Args:
-    state: the RL loop State instance.
-
-  Returns:
-    The win-rate of eval_model against target_model in the range [0, 1].
-  """
-
-  return await evaluate_model(
-      state.train_model_path, state.best_model_path, state.seed)
 
 
 def rl_loop():
@@ -497,25 +502,34 @@ def rl_loop():
     # Train on shuffled game data from recent selfplay rounds.
     tf_records = get_golden_chunk_records()
     state.iter_num += 1
-    wait(train(state, tf_records))
+
+    if state.iter_num == 1:
+      elapsed = wait(train(state, tf_records, state.train_model_name))
+      append_timestamp(elapsed, state.train_model_name)
+      prev_train_model_name = state.train_model_name
+      prev_train_model_path = state.train_model_path
+    else:
+      elasped, model_win_rate = wait([
+          train(state, tf_records, state.tmp_model_name),
+          evaluate_model(prev_train_model_path, state.best_model_path,
+                         state.get_next_seed())])
+      if model_win_rate >= FLAGS.gating_win_rate:
+        state.best_model_name = prev_train_model_name
+        state.gen_num += 1
+
+      prev_train_model_name = state.train_model_name
+      prev_train_model_path = state.train_model_path
+
+      # TODO(tommadams): Move all three files in parallel
+      logging.info('Renaming %s to %s', state.tmp_model_name, state.train_model_name)
+      for ext in ['.data-00000-of-00001', '.index', '.meta', '.pb']:
+        gfile.Rename(os.path.join(fsdb.models_dir(), state.tmp_model_name + ext),
+                     os.path.join(fsdb.models_dir(), state.train_model_name + ext))
+      append_timestamp(elapsed, state.train_model_name)
 
     mlperf_print('save_model', None, metadata={'iteration': state.iter_num})
 
-    if FLAGS.parallel_post_train:
-      # Run eval & selfplay in parallel.
-      model_win_rate, _ = wait([
-          evaluate_trained_model(state),
-          selfplay(state)])
-    else:
-      # Run eval & selfplay sequentially.
-      model_win_rate = wait(evaluate_trained_model(state))
-      wait(selfplay(state))
-
-    if model_win_rate >= FLAGS.gating_win_rate:
-      # Promote the trained model to the best model and increment the generation
-      # number.
-      state.best_model_name = state.train_model_name
-      state.gen_num += 1
+    wait(selfplay(state))
     mlperf_print('epoch_stop', None)
 
 

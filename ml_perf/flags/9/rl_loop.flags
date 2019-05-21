@@ -2,10 +2,9 @@
 
 --flags_dir=ml_perf/flags/9/
 
---iterations=30
+--iterations=25
 --gating_win_rate=0.49
 --window_size=10
---parallel_post_train=true
 --selfplay_tpu_inference_threads=8
 --eval_tpu_inference_threads=4
 
@@ -18,3 +17,5 @@
 
 --selfplay_num_games=4096
 --eval_num_games=100
+
+--disable_resign_pct=0.1
