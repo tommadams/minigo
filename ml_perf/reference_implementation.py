@@ -509,7 +509,7 @@ def rl_loop():
       prev_train_model_name = state.train_model_name
       prev_train_model_path = state.train_model_path
     else:
-      elasped, model_win_rate = wait([
+      elapsed, model_win_rate = wait([
           train(state, tf_records, state.tmp_model_name),
           evaluate_model(prev_train_model_path, state.best_model_path,
                          state.get_next_seed())])
