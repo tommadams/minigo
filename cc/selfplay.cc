@@ -268,7 +268,7 @@ class SelfPlayer {
   struct ThreadOptions {
     void Init(int thread_id, Random* rnd) {
       ParseOptionsFromFlags(&game_options, &player_options);
-      player_options.verbose = thread_id == 0;
+      player_options.verbose = false;//thread_id == 0;
       // If an random seed was explicitly specified, make sure we use a
       // different seed for each thread.
       if (player_options.random_seed != 0) {

@@ -215,7 +215,7 @@ class Evaluator {
       player_options.random_seed += 1299283 * thread_id;
     }
 
-    const bool verbose = thread_id == 0;
+    const bool verbose = false;//thread_id == 0;
     player_options.verbose = false;
     auto black = absl::make_unique<MctsPlayer>(
         black_model->NewDualNet(), nullptr, &game, player_options);

@@ -18,7 +18,7 @@ The model plays games against itself and uses these games to improve play.
     TPU_2=<unique TPU name>
     TPU_3=<unique TPU name>
     TPU_4=<unique TPU name>
-    TF_VERSION=<TPU tensorflow version>
+    TF_VERSION=1.14.1.dev20190518
 
     # Bring up 3 Cloud TPUs.
     for TPU in ${TPU_2} ${TPU_3} ${TPU_4}; do
