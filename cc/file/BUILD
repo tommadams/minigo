@@ -15,47 +15,44 @@ cc_library(
 )
 
 cc_library(
-    name = "utils_tf",
-    srcs = ["utils_tf.cc"],
-    hdrs = ["utils.h"],
-    tags = ["manual"],
-    deps = [
-        ":path",
-        "//cc:logging",
-        "//cc/platform",
-        "//cc/tensorflow",
-        "@com_google_absl//absl/strings",
-    ],
-)
-
-cc_library(
-    name = "utils_no_tf",
-    srcs = select({
-        "@bazel_tools//src/conditions:windows": ["utils_windows.cc"],
-        "//conditions:default": ["utils_posix.cc"],
-    }),
-    hdrs = ["utils.h"],
-    deps = [
-        ":path",
-        "//cc:logging",
-        "//cc/platform",
-        "@com_google_absl//absl/strings",
-    ],
-)
-
-cc_library(
     name = "file",
+    srcs = [
+        "utils.cc",
+        "file_system.h",
+        "file_system.cc",
+        "local_file_system.h",
+    ] + select({
+        "//cc/config:enable_tf": [
+            "gcs_file_system.h",
+            "gcs_file_system.cc",
+        ],
+        "//conditions:default": [],
+    }) + select({
+        "@bazel_tools//src/conditions:windows": [
+            "local_file_system_windows.cc",
+        ],
+        "//conditions:default": [
+            "local_file_system_posix.cc",
+        ],
+    }),
     hdrs = [
         "path.h",
         "utils.h",
     ],
+    copts = select({
+        "//cc/config:enable_tf": ["-DMG_ENABLE_GCS_FILE_SYSTEM"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":path",
+        "//cc:logging",
         "//cc/platform",
         "@com_google_absl//absl/strings",
     ] + select({
-        "//cc/config:enable_tf": [":utils_tf"],
-        "//conditions:default": [":utils_no_tf"],
+        "//cc/config:enable_tf": [
+            "@com_github_googlecloudplatform_google_cloud_cpp//google/cloud/storage:storage_client",
+        ],
+        "//conditions:default": [],
     }),
 )
 

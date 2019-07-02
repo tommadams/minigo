@@ -1,4 +1,4 @@
-// Copyright 2018 Google LLC
+// Copyright 2019 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,17 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "cc/init.h"
-
-#include "absl/debugging/symbolize.h"
-#include "gflags/gflags.h"
+#include "cc/file/file_system.h"
 
 namespace minigo {
+namespace file {
+namespace internal {
 
-void Init(int* pargc, char*** pargv) {
-  gflags::SetUsageMessage((*pargv)[0]);
-  absl::InitializeSymbolizer((*pargv)[0]);
-  gflags::ParseCommandLineFlags(pargc, pargv, true);
+std::string NormalizeSlashesImpl(std::string path, char bad, char good) {
+  for (size_t i = 0; i < path.size(); ++i) {
+    if (path[i] == bad) {
+      path[i] = good;
+    }
+  }
+  return path;
 }
 
+}  // namespace internal
+}  // namespace file
 }  // namespace minigo

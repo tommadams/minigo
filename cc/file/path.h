@@ -66,13 +66,6 @@ inline absl::string_view Stem(absl::string_view path) {
   return base.substr(0, pos);
 }
 
-// Normalizes the slashes in the given path.
-// On Windows, all forward slashes are replaced with back slashes unless the
-// path begins with the string "gs://", in which case back slashes are replaced
-// with forward slashes.
-// On OSX and Linux, all back slashes are replaced with forward slashes.
-std::string NormalizeSlashes(std::string path);
-
 }  // namespace file
 }  // namespace minigo
 

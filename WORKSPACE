@@ -36,3 +36,14 @@ load("//cc:tensorrt_configure.bzl", "tensorrt_configure")
 cuda_configure(name = "local_config_cuda")
 
 tensorrt_configure(name = "local_config_tensorrt")
+
+load(
+    "@com_github_googlecloudplatform_google_cloud_cpp//bazel:google_cloud_cpp_deps.bzl",
+    "google_cloud_cpp_deps",
+)
+
+google_cloud_cpp_deps()
+
+load("@com_github_grpc_grpc//bazel:grpc_deps.bzl", "grpc_deps")
+
+grpc_deps()

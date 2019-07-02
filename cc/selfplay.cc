@@ -480,8 +480,8 @@ class SelfPlayer {
       }
       MG_CHECK(line.length() > 2 && line[0] == '-' && line[1] == '-') << line;
       std::pair<std::string, std::string> flag_value =
-          absl::StrSplit(line, absl::MaxSplits('=', 1));
-      flag_value.first = flag_value.first.substr(2);
+
+          flag_value.first = flag_value.first.substr(2);
       MG_LOG(INFO) << "Setting command line flag: --" << flag_value.first << "="
                    << flag_value.second;
       gflags::SetCommandLineOption(flag_value.first.c_str(),

@@ -1,4 +1,4 @@
-// Copyright 2018 Google LLC
+// Copyright 2019 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "cc/file/utils.h"
-
 #include <cstdio>
 #include <string>
 
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "cc/file/path.h"
+#include "cc/file/utils.h"
 #include "cc/logging.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -27,6 +26,7 @@
 
 namespace minigo {
 namespace file {
+namespace internal {
 
 namespace {
 
@@ -61,11 +61,16 @@ bool RecursivelyCreateDirNormalized(const std::string& path) {
 
 }  // namespace
 
-bool RecursivelyCreateDir(std::string path) {
+FileSystem* LocalFileSystem::Get() {
+  static auto* impl = new LocalFileSystem();
+  return impl;
+}
+
+bool LocalFileSystem::RecursivelyCreateDir(std::string path) {
   return RecursivelyCreateDirNormalized(NormalizeSlashes(path));
 }
 
-bool WriteFile(std::string path, absl::string_view contents) {
+bool LocalFileSystem::WriteFile(std::string path, absl::string_view contents) {
   path = NormalizeSlashes(path);
 
   FILE* f = fopen(path.c_str(), "wb");
@@ -84,7 +89,7 @@ bool WriteFile(std::string path, absl::string_view contents) {
   return ok;
 }
 
-bool ReadFile(std::string path, std::string* contents) {
+bool LocalFileSystem::ReadFile(std::string path, std::string* contents) {
   path = NormalizeSlashes(path);
 
   FILE* f = fopen(path.c_str(), "rb");
@@ -103,7 +108,7 @@ bool ReadFile(std::string path, std::string* contents) {
   return ok;
 }
 
-bool GetModTime(std::string path, uint64_t* mtime_usec) {
+bool LocalFileSystem::GetModTime(std::string path, uint64_t* mtime_usec) {
   path = NormalizeSlashes(path);
 
   auto h =
@@ -130,7 +135,8 @@ bool GetModTime(std::string path, uint64_t* mtime_usec) {
   return success;
 }
 
-bool ListDir(std::string directory, std::vector<std::string>* files) {
+bool LocalFileSystem::ListDir(std::string directory,
+                              std::vector<std::string>* files) {
   directory = JoinPath(NormalizeSlashes(directory), "*");
 
   WIN32_FIND_DATA ffd;
@@ -152,5 +158,10 @@ bool ListDir(std::string directory, std::vector<std::string>* files) {
   return true;
 }
 
+std::string LocalFileSystem::NormalizeSlashes(std::string path) {
+  return NormalizeSlashesImpl(path, '/', '\\');
+}
+
+}  // namespace internal
 }  // namespace file
 }  // namespace minigo
