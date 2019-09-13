@@ -419,6 +419,13 @@ class SelfPlayer {
           move = player->SuggestMove(readouts, !fastplay);
         }
 
+        if (player->root()->position.n() >= 8) {
+          while (!game->game_over()) {
+            MG_CHECK(player->PlayMove(Coord::kPass));
+          }
+          break;
+        }
+
         // Log tree search stats.
         if (thread_options.verbose) {
           WTF_SCOPE0("Logging");

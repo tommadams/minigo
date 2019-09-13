@@ -33,6 +33,7 @@
 
 #ifdef MG_ENABLE_TPU_DUAL_NET
 #include "cc/dual_net/tpu_dual_net.h"
+#include "cc/dual_net/tpu_round_robin_dual_net.h"
 #endif  // MG_ENABLE_TPU_DUAL_NET
 
 namespace minigo {
@@ -96,6 +97,14 @@ std::unique_ptr<ModelFactory> NewModelFactory(absl::string_view engine_desc) {
     int buffer_count = 0;
     MG_CHECK(absl::SimpleAtoi(args[0], &buffer_count)) << args[0];
     return absl::make_unique<TpuDualNetFactory>(buffer_count, args[1]);
+  }
+  if (engine == "tpurr") {
+    std::vector<std::string> args =
+        absl::StrSplit(arg_str, absl::MaxSplits(':', 1));
+    MG_CHECK(args.size() == 2) << "\"" << arg_str << "\"";
+    int buffer_count = 0;
+    MG_CHECK(absl::SimpleAtoi(args[0], &buffer_count)) << args[0];
+    return absl::make_unique<TpuRoundRobinDualNetFactory>(buffer_count, args[1]);
   }
 #endif  // MG_ENABLE_TPU_DUAL_NET
 

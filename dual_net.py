@@ -152,6 +152,7 @@ flags.register_multi_flags_validator(
 
 FLAGS = flags.FLAGS
 
+TPU_EPOCH_TIME = int(time.time())
 
 class DualNetwork():
     def __init__(self, save_file):
@@ -498,7 +499,7 @@ def model_inference_fn(features, training, params):
     return policy_output, value_output, logits
 
 
-def tpu_model_inference_fn(features, epoch_time):
+def tpu_model_inference_fn(features):
     """Builds the model graph suitable for running on TPU.
 
     It does two things:
@@ -519,7 +520,7 @@ def tpu_model_inference_fn(features, epoch_time):
     with tf.variable_scope('', custom_getter=custom_getter):
         # TODO(tommadams): remove the tf.control_dependencies context manager
         # when a fixed version of TensorFlow is released.
-        e = tf.constant(epoch_time, name='epoch_time_%d' % epoch_time)
+        e = tf.constant(TPU_EPOCH_TIME, name='epoch_time_%d' % TPU_EPOCH_TIME)
         with tf.control_dependencies([e]):
             return model_inference_fn(features, False, FLAGS.flag_values_dict())
 
@@ -654,27 +655,26 @@ def freeze_graph_tpu(model_path):
         tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
             FLAGS.tpu_name, zone=None, project=None)
         tpu_grpc_url = tpu_cluster_resolver.get_master()
-    sess = tf.Session(tpu_grpc_url)
+    sess_config = tf.ConfigProto(
+        allow_soft_placement=True,
+        log_device_placement=True)
+    sess = tf.Session(tpu_grpc_url, config=sess_config)
 
     output_names = []
-    epoch_time = int(time.time())
     with sess.graph.as_default():
         if FLAGS.tpu_round_robin:
-            features = []
-            for i in range(FLAGS.num_tpu_cores):
-                with tf.device('/device:TPU:%d' % i):
-                    p = tf.placeholder(
-                        tf.float32, [None, go.N, go.N,
-                                     features_lib.NEW_FEATURES_PLANES],
-                        name='pos_tensor_%d' % i)
-                    features.append(p)
-                    policy_output, value_output, _ = tpu_model_inference_fn(
-                        p, epoch_time)
-                    policy_name = 'policy_output_%d' % i
-                    value_name = 'value_output_%d' % i
-                    output_names.extend([policy_name, value_name])
-                    tf.identity(policy_output, policy_name)
-                    tf.identity(value_output, value_name)
+            features = tf.placeholder(
+                tf.float32, [None, go.N, go.N,
+                             features_lib.NEW_FEATURES_PLANES],
+                name='pos_tensor')
+            policy_output, value_output, _  = tf.contrib.tpu.rewrite(
+                tpu_model_inference_fn, (features,))
+            policy_name = 'tpu_policy_output'
+            value_name = 'tpu_value_output'
+            # Give the outputs human readable names.
+            tf.identity(policy_output, policy_name)
+            tf.identity(value_output, value_name)
+            output_names.extend([policy_name, value_name])
         else:
             # Replicate the inference function for each TPU core.
             replicated_features = []
@@ -685,7 +685,7 @@ def freeze_graph_tpu(model_path):
                     name='pos_tensor_%d' % i)
                 replicated_features.append((features,))
             outputs = tf.contrib.tpu.replicate(
-                tpu_model_inference_fn, replicated_features, epoch_time)
+                tpu_model_inference_fn, replicated_features)
 
             # The replicate op assigns names like output_0_shard_0 to the output
             # names. Give them human readable names.

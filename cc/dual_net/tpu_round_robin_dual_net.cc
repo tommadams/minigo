@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "cc/dual_net/tpu_dual_net.h"
+#include "cc/dual_net/tpu_round_robin_dual_net.h"
 
 #include <algorithm>
 #include <thread>
@@ -47,6 +47,8 @@ using tensorflow::TensorShape;
 namespace minigo {
 
 namespace {
+
+constexpr int kNumCores = 8;
 
 // A GraphDef containing the ops required to initialize and shutdown a TPU.
 // This proto was generated from the script oneoffs/generate_tpu_graph_def.py.
@@ -83,6 +85,39 @@ library {
 }
 )";
 
+class RoundRobinModel : public Model {
+ public:
+  RoundRobinModel(std::string name,
+                  std::vector<std::unique_ptr<BufferedModel>> impls)
+    : Model(std::move(name), kNumCores + 1),
+      impls_(std::move(impls)) {
+  }
+
+  void RunMany(const std::vector<const Input*>& inputs,
+               std::vector<Output*>* outputs,
+               std::string* model_name) override {
+    auto idx = next_idx_.fetch_add(1);
+    impls_[idx % impls_.size()]->RunMany(inputs, outputs, model_name);
+  }
+
+ private:
+  std::atomic<size_t> next_idx_{0};
+  std::vector<std::unique_ptr<BufferedModel>> impls_;
+};
+
+void PlaceOnDevice(GraphDef* graph_def, const std::string& device) {
+  MG_LOG(INFO) << "PlaceOnDevice(\"" << device << "\")";
+  for (auto& node : *graph_def->mutable_node()) {
+    // if (node.op() == "Const") {
+    //   auto it = node.attr().find("dtype");
+    //   if (it != node.attr().end() && it->second.type() == DT_INT32) {
+    //     continue;  // Const nodes of type int32 need to be in CPU.
+    //   }
+    // }
+    node.set_device(device);
+  }
+}
+
 std::unique_ptr<Session> CreateSession(const GraphDef& graph_def,
                                        const std::string& tpu_name) {
   // Make sure tpu_name looks like a valid name.
@@ -99,69 +134,62 @@ std::unique_ptr<Session> CreateSession(const GraphDef& graph_def,
 
 }  // namespace
 
-TpuDualNet::TpuDualNet(const std::string& tpu_name,
+TpuRoundRobinDualNet::TpuRoundRobinDualNet(const std::string& tpu_name,
                        const std::string& graph_path,
-                       const tensorflow::GraphDef& graph_def, int num_replicas)
+                       const tensorflow::GraphDef& graph_def,
+                       int device)
     : DualNet(std::string(file::Stem(graph_path))),
-      num_replicas_(num_replicas) {
+      device_(device) {
   session_ = CreateSession(graph_def, tpu_name);
-  for (int i = 0; i < num_replicas_; ++i) {
-    output_names_.push_back(absl::StrCat("policy_output_", i));
-    output_names_.push_back(absl::StrCat("value_output_", i));
-  }
+
+  output_names_.emplace_back("tpu_policy_output");
+  output_names_.emplace_back("tpu_value_output");
 
   // Run warm-up inferences on all sessions.
   // Tensorflow lazily initializes the first time Session::Run is called,
   // which can take hundreds of milliseconds. This interfers with time control,
   // so explicitly run inference once during construction.
-  MG_LOG(INFO) << "Running warm-up inferences";
-  Position::Stones stones;
-  Input input;
-  input.to_play = Color::kBlack;
-  input.sym = symmetry::kIdentity;
-  input.position_history.push_back(&stones);
-  Output output;
-  std::vector<const Input*> inputs = {&input};
-  std::vector<Output*> outputs = {&output};
-  RunMany(inputs, &outputs, nullptr);
+  /// MG_LOG(INFO) << "Running warm-up inferences";
+  /// Position::Stones stones;
+  /// Input input;
+  /// input.to_play = Color::kBlack;
+  /// input.sym = symmetry::kIdentity;
+  /// input.position_history.push_back(&stones);
+  /// Output output;
+  /// std::vector<const Input*> inputs = {&input};
+  /// std::vector<Output*> outputs = {&output};
+  /// RunMany(inputs, &outputs, nullptr);
 }
 
-TpuDualNet::~TpuDualNet() {
+TpuRoundRobinDualNet::~TpuRoundRobinDualNet() {
   MG_LOG(INFO) << "Closing worker session";
   TF_CHECK_OK(session_->Close());
 }
 
-void TpuDualNet::RunManyImpl(std::string* model_name) {
+void TpuRoundRobinDualNet::RunManyImpl(std::string* model_name) {
   size_t num_features = features_.size();
-  size_t batch_size = (num_features + num_replicas_ - 1) / num_replicas_;
-  Reserve(batch_size);
+  Reserve(num_features);
 
-  // Split the input features across all replicas.
-  for (int replica = 0; replica < num_replicas_; ++replica) {
-    size_t begin = replica * batch_size;
-    size_t end = std::min(num_features, (replica + 1) * batch_size);
-    auto* data = inputs_[replica].second.flat<float>().data();
-    for (size_t i = begin; i < end; ++i) {
-      data = std::copy(features_[i].begin(), features_[i].end(), data);
-    }
+  auto* feature_data = inputs_[0].second.flat<float>().data();
+  // Copy the features into the input tensor.
+  for (const auto& feature : features_) {
+    feature_data = std::copy(feature.begin(), feature.end(), feature_data);
   }
 
   // Run the model.
   {
-    WTF_SCOPE("Session::Run", size_t)(batch_capacity_);
+    WTF_SCOPE("Session::Run", size_t, int)(batch_capacity_, device_);
     TF_CHECK_OK(session_->Run(inputs_, output_names_, {}, &outputs_));
   }
 
   // Copy the policy and value out of the output tensors.
+  const auto& policy_tensor = outputs_[0].flat<float>();
+  const auto& value_tensor = outputs_[1].flat<float>();
   for (size_t i = 0; i < num_features; ++i) {
-    size_t replica = i / batch_size;
-    size_t j = i % batch_size;
-
-    const auto& policy_tensor = outputs_[replica * 2].flat<float>();
-    const auto& value_tensor = outputs_[replica * 2 + 1].flat<float>();
-    memcpy(raw_outputs_[i].policy.data(), policy_tensor.data() + j * kNumMoves,
-           sizeof(raw_outputs_[i].policy));
-    raw_outputs_[i].value = value_tensor.data()[j];
+    auto& output = raw_outputs_[i];
+    memcpy(output.policy.data(), policy_tensor.data() + i * kNumMoves,
+           sizeof(output.policy));
+    output.value = value_tensor.data()[i];
   }
 
   if (model_name != nullptr) {
@@ -169,23 +197,19 @@ void TpuDualNet::RunManyImpl(std::string* model_name) {
   }
 }
 
-void TpuDualNet::Reserve(size_t capacity) {
+void TpuRoundRobinDualNet::Reserve(size_t capacity) {
   MG_CHECK(capacity > 0);
   if (capacity <= batch_capacity_ && capacity > 3 * batch_capacity_ / 4) {
     return;
   }
-
   inputs_.clear();
-  for (int i = 0; i < num_replicas_; ++i) {
-    inputs_.emplace_back(
-        absl::StrCat("pos_tensor_", i),
-        Tensor(DT_FLOAT, TensorShape({static_cast<int>(capacity), kN, kN,
-                                      kNumStoneFeatures})));
-  }
+  inputs_.emplace_back(
+      "pos_tensor", Tensor(DT_FLOAT, TensorShape({static_cast<int>(capacity),
+                                                  kN, kN, kNumStoneFeatures})));
   batch_capacity_ = capacity;
 }
 
-TpuDualNetFactory::TpuDualNetFactory(int buffer_count, std::string tpu_name)
+TpuRoundRobinDualNetFactory::TpuRoundRobinDualNetFactory(int buffer_count, std::string tpu_name)
     : tpu_name_(std::move(tpu_name)), buffer_count_(buffer_count) {
   // Create a session containing ops for initializing & shutting down a TPU.
   GraphDef graph_def;
@@ -197,7 +221,7 @@ TpuDualNetFactory::TpuDualNetFactory(int buffer_count, std::string tpu_name)
   TF_CHECK_OK(main_session_->Run({}, {}, {"ConfigureDistributedTPU"}, nullptr));
 }
 
-TpuDualNetFactory::~TpuDualNetFactory() {
+TpuRoundRobinDualNetFactory::~TpuRoundRobinDualNetFactory() {
   MG_LOG(INFO) << "Shutting down TPU " << tpu_name_;
   TF_CHECK_OK(main_session_->Run({}, {}, {"ShutdownDistributedTPU"}, nullptr));
 
@@ -205,7 +229,7 @@ TpuDualNetFactory::~TpuDualNetFactory() {
   TF_CHECK_OK(main_session_->Close());
 }
 
-std::unique_ptr<Model> TpuDualNetFactory::NewModel(
+std::unique_ptr<Model> TpuRoundRobinDualNetFactory::NewModel(
     const std::string& descriptor) {
   GraphDef graph_def;
   auto* env = Env::Default();
@@ -222,28 +246,21 @@ std::unique_ptr<Model> TpuDualNetFactory::NewModel(
   MG_CHECK(found_tpu_op) << "didn't find any ops starting with \"tpu\" this "
                             "model looks like it wasn't compiled for TPU";
 
-  // Count the number of times the model is replicated. There should be eight,
-  // one replica for each TPU core.
-  int num_replicas = 0;
-  for (const auto& node : graph_def.node()) {
-    absl::string_view name = node.name();
-    if (absl::ConsumePrefix(&name, "pos_tensor_")) {
-      int replica;
-      MG_CHECK(absl::SimpleAtoi(name, &replica));
-      num_replicas = std::max(num_replicas, replica + 1);
+  std::vector<std::unique_ptr<BufferedModel>> buffered_models;
+  for (int device = 0; device < kNumCores; ++device) {
+    PlaceOnDevice(&graph_def, absl::StrCat("/device:TPU:", device));
+
+    std::vector<std::unique_ptr<Model>> models;
+    for (int i = 0; i < 2; ++i) {
+      models.push_back(absl::make_unique<TpuRoundRobinDualNet>(
+            tpu_name_, descriptor, graph_def, device));
     }
-  }
-  MG_LOG(INFO) << "Found " << num_replicas << " model replicas in graph "
-               << descriptor;
-  MG_CHECK(num_replicas > 0);
-
-  std::vector<std::unique_ptr<Model>> models;
-  for (int i = 0; i < buffer_count_; ++i) {
-    models.push_back(absl::make_unique<TpuDualNet>(tpu_name_, descriptor,
-                                                   graph_def, num_replicas));
+    buffered_models.push_back(absl::make_unique<BufferedModel>(
+          descriptor, std::move(models)));
   }
 
-  return absl::make_unique<BufferedModel>(descriptor, std::move(models));
+  return absl::make_unique<RoundRobinModel>(descriptor,
+                                            std::move(buffered_models));
 }
 
 }  // namespace minigo
