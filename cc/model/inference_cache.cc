@@ -41,14 +41,13 @@ InferenceCache::Key::Key(Coord prev_move, symmetry::Symmetry canonical_sym,
   }
 
   const auto& coord_symmetry = symmetry::kCoords[canonical_sym];
-  const auto& stones = position.stones();
   for (int real_c = 0; real_c < kN * kN; ++real_c) {
+    auto color = position.point_color(real_c);
     auto symmetric_c = coord_symmetry[real_c];
-    auto h = zobrist::MoveHash(symmetric_c, stones[real_c].color());
+    auto h = zobrist::MoveHash(symmetric_c, color);
     stone_hash_ ^= h;
     cache_hash_ ^= h;
-    if (stones[real_c].color() == Color::kEmpty &&
-        !position.legal_move(real_c)) {
+    if (color == Color::kEmpty && !position.is_legal_move(real_c)) {
       cache_hash_ ^= zobrist::IllegalEmptyPointHash(symmetric_c);
     }
   }

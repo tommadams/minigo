@@ -430,9 +430,7 @@ TEST(MctsNodeTest, TestSelectLeaf) {
 
 class ReshapeTargetTest : public ::testing::Test {
  protected:
-  void SetUp() override {
-    best_ = -1;
-  }
+  void SetUp() override { best_ = -1; }
 
   void SearchPosition(const Position& p) {
     float to_play = p.to_play() == Color::kBlack ? 1 : -1;
@@ -474,7 +472,8 @@ class ReshapeTargetTest : public ::testing::Test {
     best_ = root_->GetMostVisitedMove();
     root_->ReshapeFinalVisits();
 
-    float U_common = root_->U_scale() * std::sqrt(std::max<float>(1, root_->N() - 1));
+    float U_common =
+        root_->U_scale() * std::sqrt(std::max<float>(1, root_->N() - 1));
 
     // Our tests want to verify that we lowered N until the action score
     // (computed using the after-search estimate of Q) was nearly equal to the
@@ -484,8 +483,8 @@ class ReshapeTargetTest : public ::testing::Test {
     // counts, the action scores -- based on Q -- will be misleading.  So,
     // compute the action score using the saved values of Q, as outlined above.
     for (int i = 0; i < kNumMoves; ++i) {
-      post_scores_[i] = (saved_Q[i] * to_play +
-                         (U_common * root_->child_P(i) / (1 + root_->child_N(i))));
+      post_scores_[i] = (saved_Q[i] * to_play + (U_common * root_->child_P(i) /
+                                                 (1 + root_->child_N(i))));
       post_scores_[i] -= 1000.0f * !p.legal_move(i);
     }
   }
@@ -495,7 +494,6 @@ class ReshapeTargetTest : public ::testing::Test {
   size_t best_;
   MctsNode* root_;
 };
-
 
 TEST_F(ReshapeTargetTest, TestReshapeTargetsWhite) {
   auto board = TestablePosition("", Color::kWhite);
@@ -516,7 +514,6 @@ TEST_F(ReshapeTargetTest, TestReshapeTargetsWhite) {
   EXPECT_GT(tot_N, root_->N() * 0.90);
 }
 
-
 // As above
 TEST_F(ReshapeTargetTest, TestReshapeTargetsBlack) {
   auto board = TestablePosition("", Color::kBlack);
@@ -530,7 +527,6 @@ TEST_F(ReshapeTargetTest, TestReshapeTargetsBlack) {
   EXPECT_LT(tot_N, root_->N());
   EXPECT_GT(tot_N, root_->N() * 0.90);
 }
-
 
 TEST(MctsNodeTest, NormalizeTest) {
   // Generate probability with sum of policy less than 1
@@ -631,10 +627,7 @@ TEST(MctsNodeTest, TestSuperko) {
   for (size_t iteration = 0; iteration < non_ko_moves.size(); ++iteration) {
     std::vector<std::unique_ptr<MctsNode>> nodes;
     MctsNode::EdgeStats root_stats;
-    BoardVisitor bv;
-    GroupVisitor gv;
-    nodes.push_back(absl::make_unique<MctsNode>(
-        &root_stats, Position(&bv, &gv, Color::kBlack)));
+    nodes.push_back(absl::make_unique<MctsNode>(&root_stats, {}));
 
     for (size_t move_idx = 0; move_idx < iteration; ++move_idx) {
       Coord c = Coord::FromGtp(non_ko_moves[move_idx]);

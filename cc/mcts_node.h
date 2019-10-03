@@ -161,7 +161,7 @@ class MctsNode {
                                             int i) const {
     float Q = child_Q(i);
     float U = U_common * child_P(i) / (1 + child_N(i));
-    return Q * to_play + U - 1000.0f * !position.legal_move(i);
+    return Q * to_play + U - 1000.0f * !position.is_legal_move(i);
   }
 
   MctsNode* MaybeAddChild(Coord c);

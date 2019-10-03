@@ -92,7 +92,7 @@ class PassAliveTest : public ::testing::Test {
         if (regions[i] != Color::kEmpty) {
           actual[i] = regions[i];
         } else {
-          actual[i] = test.board.stones()[i].color();
+          actual[i] = test.board.point_color(i);
         }
       }
 

@@ -249,9 +249,6 @@ class MctsPlayer {
   MctsNode* root_;
   MctsNode game_root_;
 
-  BoardVisitor bv_;
-  GroupVisitor gv_;
-
   Game* game_;
 
   Random rnd_;

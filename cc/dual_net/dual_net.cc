@@ -45,7 +45,7 @@ void DualNet::SetFeatures(const std::vector<const Input*>& model_inputs,
     for (j = 0; j < history.size(); ++j) {
       auto* dst = raw_features.data() + j * 2;
       const auto* end = dst + features_size;
-      const auto* src = history[j]->stones().data();
+      const auto* src = history[j]->points().data();
       while (dst < end) {
         auto color = src->color();
         ++src;
@@ -110,9 +110,10 @@ void DualNet::SetFeatures(const std::vector<const Input*>& model_inputs,
   }
 }
 
-void DualNet::GetOutputs(
-    const std::vector<const Input*>& model_inputs, const Tensor<float>& policy,
-    const Tensor<float>& value, std::vector<Output*>* model_outputs) {
+void DualNet::GetOutputs(const std::vector<const Input*>& model_inputs,
+                         const Tensor<float>& policy,
+                         const Tensor<float>& value,
+                         std::vector<Output*>* model_outputs) {
   MG_CHECK(model_outputs->size() == model_inputs.size());
   MG_CHECK(policy.n == value.n);
   MG_CHECK(static_cast<int>(model_inputs.size()) <= policy.n);
@@ -134,10 +135,9 @@ void DualNet::GetOutputs(
 DualNet::~DualNet() = default;
 
 // Explicit template specializations for the tensor types we support.
-template void DualNet::SetFeatures<float>(
-    const std::vector<const Input*>&, FeatureType, Tensor<float>*);
-template void DualNet::SetFeatures<uint8_t>(
-    const std::vector<const Input*>&, FeatureType, Tensor<uint8_t>*);
-
+template void DualNet::SetFeatures<float>(const std::vector<const Input*>&,
+                                          FeatureType, Tensor<float>*);
+template void DualNet::SetFeatures<uint8_t>(const std::vector<const Input*>&,
+                                            FeatureType, Tensor<uint8_t>*);
 
 }  // namespace minigo

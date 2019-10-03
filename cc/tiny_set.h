@@ -22,8 +22,6 @@ namespace minigo {
 // tiny_set is a very simple set-like container that uses inline storage.
 // Since insertions into the set are O(N), tiny_set should only be used for a
 // very small number of elements.
-// The Position code uses tiny_sets to keep track of neighboring groups of a
-// point on the board.
 template <typename T, int Capacity>
 class tiny_set : private inline_vector<T, Capacity> {
   using impl = inline_vector<T, Capacity>;

@@ -23,122 +23,69 @@
 #include "cc/color.h"
 #include "cc/constants.h"
 #include "cc/coord.h"
-#include "cc/group.h"
 #include "cc/inline_vector.h"
 #include "cc/logging.h"
-#include "cc/stone.h"
 #include "cc/zobrist.h"
 
 namespace minigo {
 extern const std::array<inline_vector<Coord, 4>, kN * kN> kNeighborCoords;
 
-// BoardVisitor visits points on the board only once.
-// A simple example that visits all points on the board only once:
-//   BoardVisitor bv;
-//   bv.Begin()
-//   bv.Visit(0);
-//   while (!bv.Done()) {
-//     Coord coord = bv.Next();
-//     std::cout << "Visiting " << coord << "\n";
-//     for (auto neighbor_coord : GetNeighbors(coord)) {
-//       bv.Visit(neighbor_coord);
-//     }
-//   }
-//
-// Points are visited in the order that they are passed to Visit for the first
-// time.
-class BoardVisitor {
- public:
-  BoardVisitor() = default;
-
-  // Starts a new visit around the board.
-  void Begin() {
-    MG_DCHECK(Done());
-    if (++epoch_ == 0) {
-      memset(visited_.data(), 0, sizeof(visited_));
-      epoch_ = 1;
-    }
-  }
-
-  // Returns true when there are no more points to visit.
-  bool Done() const { return stack_.empty(); }
-
-  // Returns the coordinates of the next point in the stack to visit.
-  Coord Next() {
-    auto c = stack_.back();
-    stack_.pop_back();
-    return c;
-  }
-
-  // If this is the first time Visit has been passed coordinate c since the most
-  // recent call to Begin, Visit pushes the coordinate onto its stack of points
-  // to visit and returns true. Otherwise, Visit returns false.
-  bool Visit(Coord c) {
-    if (visited_[c] != epoch_) {
-      visited_[c] = epoch_;
-      stack_.push_back(c);
-      return true;
-    }
-    return false;
-  }
-
- private:
-  inline_vector<Coord, kN * kN> stack_;
-  std::array<uint8_t, kN * kN> visited_;
-
-  // Initializing to 0xff means the visited_ array will get initialized on the
-  // first call to Begin().
-  uint8_t epoch_ = 0xff;
-};
-
-// GroupVisitor simply keeps track of which groups have been visited since the
-// most recent call to Begin. Unlike BoardVisitor, it does not keep a pending
-// stack of groups to visit.
-class GroupVisitor {
- public:
-  GroupVisitor() = default;
-
-  void Begin() {
-    if (++epoch_ == 0) {
-      memset(visited_.data(), 0, sizeof(visited_));
-      epoch_ = 1;
-    }
-  }
-
-  bool Visit(GroupId id) {
-    if (visited_[id] != epoch_) {
-      visited_[id] = epoch_;
-      return true;
-    }
-    return false;
-  }
-
- private:
-  std::array<uint8_t, Group::kMaxNumGroups> visited_;
-
-  // Initializing to 0xff means the visited_ array will get initialized on the
-  // first call to Begin().
-  uint8_t epoch_ = 0xff;
-};
-
 // Position represents a single board position.
-// It tracks the stones on the board and their groups, and contains the logic
-// for removing groups with no remaining liberties and merging neighboring
-// groups of the same color.
+// It tracks the stones on the board and their chains, and contains the logic
+// for removing chains with no remaining liberties and merging neighboring
+// chains of the same color.
 //
 // Since the MCTS code makes a copy of the board position for each expanded
 // node in the tree, we aim to keep the data structures as compact as possible.
 // This is in tension with our other aim of avoiding heap allocations where
-// possible, which means we have to preallocate some pools of memory. In
-// particular, the BoardVisitor and GroupVisitor classes that Position uses to
-// update its internal state are relatively large compared to the board size
-// (even though we're only talking a couple of kB in total. Consequently, the
-// caller of the Position code must pass pointers to previously allocated
-// instances of BoardVisitor and GroupVisitor. These can then be reused by all
-// instances of the Position class.
+// possible, which means we have to preallocate some pools of memory.
 class Position {
  public:
-  using Stones = std::array<Stone, kN * kN>;
+  // A default constructed Point represents an empty point that's legal to
+  // play.
+  struct Point {
+    static constexpr int kIsHeadBit = 0x8000;
+    static constexpr int kIsLegalBit = 0x4000;
+    static constexpr int kColorBits = 0x3000;
+    static constexpr int kColorShift = 12;
+    static constexpr int kSizeBits = 0x01ff;
+
+    // Returns the color of the chain at c, or Color::kEmpty.
+    Color color() const {
+      return static_cast<Color>((bits & Point::kColorBits) >>
+                                Point::kColorShift);
+    }
+
+    // Returns true if the point is empty.
+    bool is_empty() const { return (bits & Point::kColorBits) == 0; }
+
+    // Returns true if the point is a legal move.
+    bool is_legal_move() const { return (bits & Point::kIsLegalBit) != 0; }
+
+    // If this point is the head of a chain: holds the number of liberties of
+    // the chain. If this point is empty: holds 0. Otherwise: the previous point
+    // in the chain.
+    uint16_t liberties_prev = 0;
+
+    // The next point in a chain, or Coord::kInvalid.
+    uint16_t next = Coord::kInvalid;
+
+    //  f e d c b a 9 8 7 6 5 4 3 2 1 0
+    // +-+-+---+-----+-----------------+
+    // |H|L|C C|X X X|S S S S S S S S S|
+    // +-+-+---+-----+-----------------+
+    // Packed bit field:
+    //  H : If 1, this point is the head of a chain or empty region.
+    //  L : If 1, this point is a legal move.
+    //  C : This point's color: empty, black, white.
+    //  X : Reserved for future expansion.
+    //  S : If this point is the head of a chain or empty region: the size of
+    //  that chain or empty region.
+    //      Otherwise: the index of the head of the chain or empty region.
+    uint16_t bits = kIsLegalBit;
+  };
+
+  using Points = std::array<Point, kN * kN>;
 
   // State required to undo a call to PlayMove.
   struct UndoState {
@@ -152,7 +99,8 @@ class Position {
 
   // Calculates the Zobrist hash for an array of stones. Prefer using
   // Position::stone_hash() if possible.
-  static zobrist::Hash CalculateStoneHash(const Stones& stones);
+  static zobrist::Hash CalculateStoneHash(
+      const std::array<Color, kN * kN>& stones);
 
   // Interface used to enforce positional superko based on the Zobrist hash of
   // a position.
@@ -162,14 +110,7 @@ class Position {
         zobrist::Hash stone_hash) const = 0;
   };
 
-  // Initializes an empty board.
-  // All moves are considered legal.
-  Position(BoardVisitor* bv, GroupVisitor* gv, Color to_play);
-
-  // Copies the position's state from another instance, while preserving the
-  // BoardVisitor and GroupVisitor it was constructed with.
-  Position(BoardVisitor* bv, GroupVisitor* gv, const Position& other);
-
+  explicit Position(Color to_play);
   Position(const Position&) = default;
   Position& operator=(const Position&) = default;
 
@@ -181,7 +122,8 @@ class Position {
   UndoState PlayMove(Coord c, Color color = Color::kEmpty,
                      ZobristHistory* zobrist_history = nullptr);
 
-  // Undoes the move recent call to PlayMove.
+  // Undoes the most recent call to PlayMove.
+  // zobrist_history should not include the move to be undone.
   void UndoMove(const UndoState& undo,
                 ZobristHistory* zobrist_history = nullptr);
 
@@ -194,12 +136,12 @@ class Position {
   // negative.
   float CalculateScore(float komi);
 
-  // Calculates all pass-alive region that are enclosed by groups of `color`
+  // Calculates all pass-alive region that are enclosed by chains of `color`
   // stones.
   // Elements in the returned array are set to `Color::kBlack` or
   // `Color::kWhite` if they belong to a pass-alive region or `Color::kEmpty`
   // otherwise. Only intersections inside the enclosed region are set,
-  // intersections that are part of an enclosing group are set to
+  // intersections that are part of an enclosing chain are set to
   // `Color::kEmpty`. Concretely, given the following position:
   //   X . X . O X .
   //   X X X X X X .
@@ -222,11 +164,11 @@ class Position {
     //  - the move is suicidal.
     kIllegal,
 
-    // The move will not capture an opponent's group.
+    // The move will not capture an opponent's chain.
     // The move is not necessarily legal because of superko.
     kNoCapture,
 
-    // The move will capture an opponent's group.
+    // The move will capture an opponent's chain.
     // The move is not necessarily legal because of superko.
     kCapture,
   };
@@ -236,20 +178,62 @@ class Position {
   std::string ToPrettyString(bool use_ansi_colors = true) const;
 
   Color to_play() const { return to_play_; }
-  const Stones& stones() const { return stones_; }
   int n() const { return n_; }
   Coord ko() const { return ko_; }
   zobrist::Hash stone_hash() const { return stone_hash_; }
-  bool legal_move(Coord c) const {
-    MG_DCHECK(c < kNumMoves);
-    return legal_moves_[c];
+  const Points& points() const { return points_; }
+
+  // Returns the color of the chain at c, or Color::kEmpty.
+  Color point_color(Coord c) const { return points_[c].color(); }
+
+  // Return true if the point at c is empty.
+  bool is_empty(Coord c) const { return points_[c].is_empty(); }
+
+  // Returns true if the point at c is a legal move.
+  bool is_legal_move(Coord c) const {
+    MG_DCHECK(c <= Coord::kResign);
+    return c == Coord::kPass || c == Coord::kResign ||
+           points_[c].is_legal_move();
   }
-  // Returns the number of liberties the chain at c has.
+
+  // Returns the number of liberties of the chain at c.
+  // Returns 0 if the point at c is empty.
   int num_chain_liberties(Coord c) const {
-    MG_DCHECK(c <= kN * kN);
-    auto s = stones_[c];
-    return s.empty() ? 0 : groups_[s.group_id()].num_liberties;
+    MG_DCHECK(!is_empty(c));
+    return static_cast<int>(points_[chain_head(c)].liberties_prev);
   }
+
+  // Returns the head of the chain at c.
+  // All stones in a chain have the same head.
+  Coord chain_head(Coord c) const {
+    MG_DCHECK(!is_empty(c));
+    return is_head(c) ? c
+                      : static_cast<Coord>(points_[c].bits & Point::kSizeBits);
+  }
+
+  // Returns the previous stone in the chain at c o/ Coord::kInvalid if this is
+  // the head of the list.
+  Coord chain_prev(Coord c) const {
+    MG_DCHECK(!is_empty(c));
+    return is_head(c) ? Coord::kInvalid : points_[c].liberties_prev;
+  }
+
+  // Returns the next stone in the chain c or Coord::kInvalid if this is the
+  // tail of the list.
+  Coord chain_next(Coord c) const {
+    MG_DCHECK(!is_empty(c));
+    return points_[c].next;
+  }
+
+  // Returns the size of chain region at c.
+  int chain_size(Coord c) const {
+    MG_DCHECK(!is_empty(c));
+    return static_cast<int>(points_[chain_head(c)].bits & Point::kSizeBits);
+  }
+
+  // Validates the internal consitency of the Position.
+  // This should only be called in tests & debug builds.
+  void Validate() const;
 
   // The following methods are protected to enable direct testing by unit tests.
  protected:
@@ -259,27 +243,21 @@ class Position {
   void CalculatePassAliveRegionsForColor(
       Color color, std::array<Color, kN * kN>* result) const;
 
-  // Returns the Group of the stone at the given coordinate. Used for testing.
-  Group GroupAt(Coord c) const {
-    auto s = stones_[c];
-    return s.empty() ? Group() : groups_[s.group_id()];
-  }
-
   // Returns color C if the position at idx is empty and surrounded on all
   // sides by stones of color C.
   // Returns Color::kEmpty otherwise.
   Color IsKoish(Coord c) const;
 
   // Adds the stone to the board.
-  // Removes newly surrounded opponent groups.
+  // Removes newly surrounded opponent chains.
   // DOES NOT update legal_moves_: callers of AddStoneToBoard must explicitly
   // call UpdateLegalMoves afterwards (this is because UpdateLegalMoves uses
   // AddStoneToBoard internally).
-  // Updates liberty counts of remaining groups.
+  // Updates liberty counts of remaining chains.
   // Updates num_captures_.
   // If the move captures a single stone, sets ko_ to the coordinate of that
   // stone. Sets ko_ to kInvalid otherwise.
-  // Returns a list of the neighbors of c that belonged to groups that were
+  // Returns a list of the neighbors of c that belonged to chains that were
   // captured by this move.
   inline_vector<Coord, 4> AddStoneToBoard(Coord c, Color color);
 
@@ -288,30 +266,69 @@ class Position {
   void UpdateLegalMoves(ZobristHistory* zobrist_history);
 
  private:
-  // Removes the group with a stone at the given coordinate from the board,
-  // updating the liberty counts of neighboring groups.
-  void RemoveGroup(Coord c);
+  // Simple array that marks when points on a board have been visited.
+  // Only supports visiting each point once.
+  class OneTimePointVisitor {
+   public:
+    bool Visit(Coord c) {
+      if (!visited_[c]) {
+        visited_[c] = true;
+        return true;
+      }
+      return false;
+    }
 
-  // Merge neighboring groups of the same color as the stone at coordinate c
-  // into that stone's group. Called when a stone is placed on the board that
-  // has two or more distinct neighboring groups of the same color.
-  void MergeGroup(Coord c);
+   private:
+    std::array<bool, kN * kN> visited_{};
+  };
+
+  // Array that marks when points on a board have been visited.
+  // Uses 2x the storage as OneTimePointVisitor but allows points to be visited
+  // multiple times, as long as the visit tags are different each time.
+  class TaggedPointVisitor {
+   public:
+    explicit TaggedPointVisitor(uint16_t invalid_tag)
+        : invalid_tag_(invalid_tag) {
+      for (auto& x : visited_) {
+        x = invalid_tag;
+      }
+    }
+
+    bool HasAnyVisit(Coord c) const { return visited_[c] != invalid_tag_; }
+
+    bool Visit(Coord c, uint16_t tag) {
+      if (visited_[c] != tag) {
+        visited_[c] = tag;
+        return true;
+      }
+      return false;
+    }
+
+   private:
+    std::array<uint16_t, kN * kN> visited_;
+    const uint16_t invalid_tag_;
+  };
+
+  // Removes the chain with a stone at the given coordinate from the board,
+  // updating the liberty counts of neighboring chains.
+  void RemoveChain(Coord c);
 
   // Called as part of UndoMove for the given color at point capture_c.
-  // Replaces the previously captured stones at point group_c.
-  GroupId UncaptureGroup(Color color, Coord capture_c, Coord group_c);
+  // Replaces the previously captured stones at point chain_c.
+  void UncaptureChain(Color color, Coord capture_c, Coord chain_c);
 
   // Called as part of UndoMove.
-  // Create a new group for the chain of stones at c.
-  void AssignNewGroup(Coord c);
+  // Rebuilds the chain at c. The chain's head changes to c.
+  void RebuildChain(Coord c, TaggedPointVisitor* visitor);
 
-  // Returns true if the point at coordinate c neighbors the given group.
-  bool HasNeighboringGroup(Coord c, GroupId group_id) const;
+  // Returns true if the point at coordinate c neighbors a chain with head ch.
+  bool HasNeighboringChain(Coord c, Coord ch) const;
 
-  Stones stones_;
-  BoardVisitor* board_visitor_;
-  GroupVisitor* group_visitor_;
-  GroupPool groups_;
+  uint16_t is_head(Coord c) const {
+    return points_[c].bits & Point::kIsHeadBit;
+  }
+
+  Points points_;
 
   Color to_play_;
   Coord ko_ = Coord::kInvalid;
@@ -320,8 +337,6 @@ class Position {
   std::array<int, 2> num_captures_{{0, 0}};
 
   int n_ = 0;
-
-  std::array<bool, kNumMoves> legal_moves_;
 
   // Zobrist hash of the stones. It can be used for positional superko.
   // This has does not include number of consecutive passes or ko, so should not

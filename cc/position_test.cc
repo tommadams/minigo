@@ -28,35 +28,6 @@
 namespace minigo {
 namespace {
 
-TEST(BoardVisitorTest, TestEpochRollover) {
-  for (int j = 0; j <= 256; ++j) {
-    BoardVisitor bv;
-    for (int i = 0; i <= j; ++i) {
-      bv.Begin();
-    }
-    for (int i = 0; i < kN * kN; ++i) {
-      auto c = Coord(i);
-      ASSERT_TRUE(bv.Visit(c));
-      ASSERT_EQ(c, bv.Next());
-      ASSERT_FALSE(bv.Visit(c));
-    }
-  }
-}
-
-TEST(GroupVisitorTest, TestEpochRollover) {
-  for (int j = 0; j <= 256; ++j) {
-    GroupVisitor gv;
-    for (int i = 0; i <= j; ++i) {
-      gv.Begin();
-    }
-    for (int i = 0; i < Group::kMaxNumGroups; ++i) {
-      auto g = GroupId(i);
-      ASSERT_TRUE(gv.Visit(g));
-      ASSERT_FALSE(gv.Visit(g));
-    }
-  }
-}
-
 TEST(PositionTest, TestIsKoish) {
   auto board = TestablePosition(R"(
       .X.O.O.O.
@@ -88,16 +59,16 @@ TEST(PositionTest, TestIsKoish) {
   }
 }
 
-TEST(PositionTest, TestMergeGroups1) {
+TEST(PositionTest, TestMergeChains1) {
   auto board = TestablePosition(R"(
       .X.
       X.X
       .X.)");
 
-  EXPECT_EQ(3, board.GroupAt("B9").num_liberties);
-  EXPECT_EQ(3, board.GroupAt("A8").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("C8").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("B7").num_liberties);
+  EXPECT_EQ(3, board.num_chain_liberties("B9"));
+  EXPECT_EQ(3, board.num_chain_liberties("A8"));
+  EXPECT_EQ(4, board.num_chain_liberties("C8"));
+  EXPECT_EQ(4, board.num_chain_liberties("B7"));
 
   board.PlayMove("B8", Color::kBlack);
 
@@ -107,12 +78,11 @@ TEST(PositionTest, TestMergeGroups1) {
       .X.)"),
             board.ToSimpleString());
 
-  auto group = board.GroupAt("B8");
-  EXPECT_EQ(5, group.size);
-  EXPECT_EQ(6, group.num_liberties);
+  EXPECT_EQ(5, board.chain_size("B8"));
+  EXPECT_EQ(6, board.num_chain_liberties("B8"));
 }
 
-TEST(PositionTest, TestMergeGroups2) {
+TEST(PositionTest, TestMergeChains2) {
   auto board = TestablePosition(R"(
       .........
       .........
@@ -124,8 +94,8 @@ TEST(PositionTest, TestMergeGroups2) {
       ..O..O...
       ..OOO....)");
 
-  EXPECT_EQ(10, board.GroupAt("C1").num_liberties);
-  EXPECT_EQ(8, board.GroupAt("F2").num_liberties);
+  EXPECT_EQ(10, board.num_chain_liberties("C1"));
+  EXPECT_EQ(8, board.num_chain_liberties("F2"));
 
   board.PlayMove("F1", Color::kWhite);
 
@@ -141,9 +111,8 @@ TEST(PositionTest, TestMergeGroups2) {
       ..OOOO...)"),
             board.ToSimpleString());
 
-  auto group = board.GroupAt("F4");
-  EXPECT_EQ(10, group.size);
-  EXPECT_EQ(16, group.num_liberties);
+  EXPECT_EQ(10, board.chain_size("F4"));
+  EXPECT_EQ(16, board.num_chain_liberties("F4"));
 }
 
 TEST(PositionTest, TestCaptureStone) {
@@ -184,10 +153,10 @@ TEST(PositionTest, TestCaptureMany1) {
       .XOO.
       ..XX.)");
 
-  EXPECT_EQ(4, board.GroupAt("C7").num_liberties);
-  EXPECT_EQ(3, board.GroupAt("B6").num_liberties);
-  EXPECT_EQ(1, board.GroupAt("C6").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("D5").num_liberties);
+  EXPECT_EQ(4, board.num_chain_liberties("C7"));
+  EXPECT_EQ(3, board.num_chain_liberties("B6"));
+  EXPECT_EQ(1, board.num_chain_liberties("C6"));
+  EXPECT_EQ(4, board.num_chain_liberties("D5"));
 
   board.PlayMove("E6", Color::kBlack);
 
@@ -202,10 +171,10 @@ TEST(PositionTest, TestCaptureMany1) {
       ..XX.)"),
             board.ToSimpleString());
 
-  EXPECT_EQ(6, board.GroupAt("C7").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("B6").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("E6").num_liberties);
-  EXPECT_EQ(6, board.GroupAt("D5").num_liberties);
+  EXPECT_EQ(6, board.num_chain_liberties("C7"));
+  EXPECT_EQ(4, board.num_chain_liberties("B6"));
+  EXPECT_EQ(4, board.num_chain_liberties("E6"));
+  EXPECT_EQ(6, board.num_chain_liberties("D5"));
 }
 
 TEST(PositionTest, TestCaptureMany2) {
@@ -229,16 +198,16 @@ TEST(PositionTest, TestCaptureMany2) {
       ..X..)"),
             board.ToSimpleString());
 
-  EXPECT_EQ(3, board.GroupAt("C9").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("B8").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("D8").num_liberties);
-  EXPECT_EQ(3, board.GroupAt("A7").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("B6").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("D6").num_liberties);
-  EXPECT_EQ(4, board.GroupAt("C5").num_liberties);
+  EXPECT_EQ(3, board.num_chain_liberties("C9"));
+  EXPECT_EQ(4, board.num_chain_liberties("B8"));
+  EXPECT_EQ(4, board.num_chain_liberties("D8"));
+  EXPECT_EQ(3, board.num_chain_liberties("A7"));
+  EXPECT_EQ(4, board.num_chain_liberties("B6"));
+  EXPECT_EQ(4, board.num_chain_liberties("D6"));
+  EXPECT_EQ(4, board.num_chain_liberties("C5"));
 }
 
-TEST(PositionTest, TestCaptureMultipleGroups) {
+TEST(PositionTest, TestCaptureMultipleChains) {
   auto board = TestablePosition(R"(
       .OX
       OXX
@@ -255,11 +224,11 @@ TEST(PositionTest, TestCaptureMultipleGroups) {
       XX.)"),
             board.ToSimpleString());
 
-  EXPECT_EQ(2, board.GroupAt("A9").num_liberties);
-  EXPECT_EQ(7, board.GroupAt("B8").num_liberties);
+  EXPECT_EQ(2, board.num_chain_liberties("A9"));
+  EXPECT_EQ(7, board.num_chain_liberties("B8"));
 }
 
-TEST(PositionTest, TestSameFriendlyGroupNeighboringTwice) {
+TEST(PositionTest, TestSameFriendlyChainNeighboringTwice) {
   auto board = TestablePosition(R"(
       OO
       O.)");
@@ -271,12 +240,11 @@ TEST(PositionTest, TestSameFriendlyGroupNeighboringTwice) {
       OO)"),
             board.ToSimpleString());
 
-  auto group = board.GroupAt("A9");
-  EXPECT_EQ(4, group.size);
-  EXPECT_EQ(4, group.num_liberties);
+  EXPECT_EQ(4, board.chain_size("A9"));
+  EXPECT_EQ(4, board.num_chain_liberties("A9"));
 }
 
-TEST(PositionTest, TestSameOpponentGroupNeighboringTwice) {
+TEST(PositionTest, TestSameOpponentChainNeighboringTwice) {
   auto board = TestablePosition(R"(
       OO
       O.)");
@@ -288,13 +256,11 @@ TEST(PositionTest, TestSameOpponentGroupNeighboringTwice) {
       OX)"),
             board.ToSimpleString());
 
-  auto white_group = board.GroupAt("A9");
-  EXPECT_EQ(3, white_group.size);
-  EXPECT_EQ(2, white_group.num_liberties);
+  EXPECT_EQ(3, board.chain_size("A9"));
+  EXPECT_EQ(2, board.num_chain_liberties("A9"));
 
-  auto black_group = board.GroupAt("B8");
-  EXPECT_EQ(1, black_group.size);
-  EXPECT_EQ(2, black_group.num_liberties);
+  EXPECT_EQ(1, board.chain_size("B8"));
+  EXPECT_EQ(2, board.num_chain_liberties("B8"));
 }
 
 TEST(PositionTest, TestSuicidalMovesAreIllegal) {
@@ -468,76 +434,29 @@ TEST(PositionTest, PlayGame) {
   EXPECT_EQ(-0.5, board.CalculateScore(kDefaultKomi));
 }
 
-void ValidatePosition(TestablePosition* p) {
-  auto calculate_group_info = [p](Coord c) {
-    Group group;
-
-    const auto& stones = p->stones();
-    auto color = stones[c].color();
-    auto expected_group_id = stones[c].group_id();
-    MG_CHECK(color != Color::kEmpty);
-
-    auto other_color = OtherColor(color);
-    auto& bv = p->board_visitor;
-    bv.Begin();
-    bv.Visit(c);
-    while (!bv.Done()) {
-      c = bv.Next();
-      if (stones[c].color() == Color::kEmpty) {
-        group.num_liberties += 1;
-      } else {
-        MG_CHECK(stones[c].group_id() == expected_group_id);
-        group.size += 1;
-        for (auto nc : kNeighborCoords[c]) {
-          if (stones[nc].color() != other_color) {
-            bv.Visit(nc);
-          }
-        }
-      }
-    }
-
-    return group;
-  };
-
-  for (int i = 0; i < kN * kN; ++i) {
-    auto c = static_cast<Coord>(i);
-    if (p->stones()[c].empty()) {
-      continue;
-    }
-    auto expected_group = calculate_group_info(c);
-    auto actual_group = p->GroupAt(c);
-    MG_CHECK(expected_group.size == actual_group.size)
-        << c << " : expected_group_size:" << expected_group.size
-        << " actual_group_size:" << actual_group.size;
-    MG_CHECK(expected_group.num_liberties == actual_group.num_liberties)
-        << c << " : expected_num_liberties:" << expected_group.num_liberties
-        << " actual_num_liberties:" << actual_group.num_liberties;
-  }
-}
-
 TEST(PositionTest, UndoMove) {
   // Play a move at point `c` with color `color` on a board generated from
   // `board_str`. Then undo the move again and validate the board state.
   auto test_undo = [](const std::string& c, Color color,
                       const std::string& board_str) {
     TestablePosition board(board_str);
-    ValidatePosition(&board);
+    board.Validate();
 
     std::array<Color, kN * kN> original_stones;
     for (int i = 0; i < kN * kN; ++i) {
-      original_stones[i] = board.stones()[i].color();
+      original_stones[i] = board.point_color(i);
     }
 
     auto ko = board.ko();
     auto undo = board.PlayMove(Coord::FromGtp(c), color);
-    ValidatePosition(&board);
+    board.Validate();
     board.UndoMove(undo);
     MG_CHECK(board.ko() == ko);
-    ValidatePosition(&board);
+    board.Validate();
 
     std::array<Color, kN * kN> undone_stones;
     for (int i = 0; i < kN * kN; ++i) {
-      undone_stones[i] = board.stones()[i].color();
+      undone_stones[i] = board.point_color(i);
     }
     MG_CHECK(original_stones == undone_stones);
   };
@@ -565,7 +484,7 @@ TEST(PositionTest, UndoMove) {
   // Test undoing a single move.
   test_undo("C3", Color::kWhite, R"()");
 
-  // Test that undo correctly restores a single captured group.
+  // Test that undo correctly restores a single captured chain.
   test_undo("C8", Color::kWhite, R"(
      .O.
      OX.
@@ -577,7 +496,7 @@ TEST(PositionTest, UndoMove) {
      XOOOX
      XXXXX)");
 
-  // Test that undo correctly restores a multiple captured groups.
+  // Test that undo correctly restores a multiple captured chains.
   test_undo("D6", Color::kBlack, R"(
      ...X...
      ..XOX..
@@ -587,7 +506,7 @@ TEST(PositionTest, UndoMove) {
      ..XOX..
      ...X...)");
 
-  // Test that undo splits a group that was joined by the undone move.
+  // Test that undo splits a chain that was joined by the undone move.
   test_undo("B8", Color::kWhite, R"(
      .O.
      O.O
@@ -597,7 +516,7 @@ TEST(PositionTest, UndoMove) {
      X.X
      X.X)");
 
-  // Test that undo doesn't split a group that's joined in another location.
+  // Test that undo doesn't split a chain that's joined in another location.
   test_undo("B9", Color::kBlack, R"(
      X.X
      X.X
@@ -610,18 +529,17 @@ TEST(PositionTest, UndoMove) {
      .XO.)");
 }
 
-// A regression test for a bug where Position::RemoveGroup didn't recycle the
-// removed group's ID. The test plays repeatedly plays a random legal move (or
-// passes if the player has no legal moves). Under these conditions, the game
-// will never end.
+// Undo stress test: repeatedly play random legal moves, then undo all the moves
+// and verify the undone positions match.
 TEST(PositionTest, PlayRandomLegalMoves) {
   Random rnd(983465983, 1);
   TestablePosition position("");
 
   struct State {
-    State(zobrist::Hash stone_hash, const Position::UndoState& undo)
-        : stone_hash(stone_hash), undo(undo) {}
+    State(zobrist::Hash stone_hash, int n, const Position::UndoState& undo)
+        : stone_hash(stone_hash), n(n), undo(undo) {}
     zobrist::Hash stone_hash;
+    int n;
     Position::UndoState undo;
   };
 
@@ -629,31 +547,40 @@ TEST(PositionTest, PlayRandomLegalMoves) {
   for (int i = 0; i < 10000; ++i) {
     std::vector<Coord> legal_moves;
     for (int c = 0; c < kN * kN; ++c) {
-      if (position.legal_move(c)) {
+      if (position.is_legal_move(c)) {
         legal_moves.push_back(c);
       }
     }
 
     auto stone_hash = position.stone_hash();
+    int n = position.n();
     if (!legal_moves.empty()) {
       auto c = legal_moves[rnd.UniformInt(0, legal_moves.size() - 1)];
-      states.emplace_back(stone_hash, position.PlayMove(c, position.to_play()));
+      states.emplace_back(stone_hash, n,
+                          position.PlayMove(c, position.to_play()));
     } else {
-      states.emplace_back(stone_hash,
+      states.emplace_back(stone_hash, n,
                           position.PlayMove(Coord::kPass, position.to_play()));
     }
   }
 
   // Undo all the moves, validating as we go.
-  ValidatePosition(&position);
+  position.Validate();
   while (!states.empty()) {
     const auto& state = states.back();
     position.UndoMove(state.undo);
-    ValidatePosition(&position);
+    position.Validate();
     MG_CHECK(position.stone_hash() == state.stone_hash);
+    MG_CHECK(position.n() == state.n);
     states.pop_back();
   }
 }
 
 }  // namespace
 }  // namespace minigo
+
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  ::minigo::zobrist::Init(614944751);
+  return RUN_ALL_TESTS();
+}

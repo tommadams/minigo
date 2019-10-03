@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <sstream>
+#include <type_traits>
 #include <utility>
 
 #include "absl/strings/str_format.h"
@@ -30,6 +31,57 @@ constexpr char kPrintWhite[] = "\x1b[0;31;47m";
 constexpr char kPrintBlack[] = "\x1b[0;31;40m";
 constexpr char kPrintEmpty[] = "\x1b[0;31;43m";
 constexpr char kPrintNormal[] = "\x1b[0m";
+
+// A simple array-backed map for storing objects at points on the board.
+// Used for computing pass-alive regions.
+template <typename V>
+class PointMap {
+ public:
+  // Insert a new element into the map at the given coordinate c.
+  // c must be >= 0 and < kN * kN.
+  // Inserting multiple elements into the map at the same coordinate results in
+  // undefined behavior.
+  template <typename... Args>
+  V& emplace(Coord c, Args&&... args) {
+    coords_.push_back(c);
+    return *(new (&data_[c]) V(std::forward<Args>(args)...));
+  }
+
+  // Access an element that has been inserted into the map at coordinate c.
+  // Accessing an element that hasn't been inserted into the map results in
+  // undefined behavior.
+  V& operator[](Coord c) {
+    MG_DCHECK(std::find(coords_.begin(), coords_.end(), c) != coords_.end());
+    return *reinterpret_cast<V*>(&data_[c]);
+  }
+  const V& operator[](Coord c) const {
+    MG_DCHECK(std::find(coords_.begin(), coords_.end(), c) != coords_.end());
+    return *reinterpret_cast<const V*>(&data_[c]);
+  }
+
+  // Return the coordinates of elements that have been inserted into the map.
+  const inline_vector<Coord, kN * kN>& coords() const { return coords_; }
+
+ private:
+  typename std::aligned_storage<sizeof(V), alignof(V)>::type data_[kN * kN];
+  inline_vector<Coord, kN * kN> coords_;
+};
+
+// A fixed-capacity stack of Coords used when flood filling points on the board.
+class CoordStack : private inline_vector<Coord, kN * kN> {
+  using Impl = inline_vector<Coord, kN * kN>;
+
+ public:
+  using Impl::empty;
+
+  void push(Coord c) { Impl::push_back(c); }
+
+  Coord pop() {
+    auto result = Impl::back();
+    Impl::pop_back();
+    return result;
+  }
+};
 
 }  // namespace
 
@@ -55,25 +107,16 @@ const std::array<inline_vector<Coord, 4>, kN* kN> kNeighborCoords = []() {
   return result;
 }();
 
-zobrist::Hash Position::CalculateStoneHash(const Position::Stones& stones) {
+zobrist::Hash Position::CalculateStoneHash(
+    const std::array<Color, kN * kN>& stones) {
   zobrist::Hash hash = 0;
   for (int c = 0; c < kN * kN; ++c) {
-    hash ^= zobrist::MoveHash(c, stones[c].color());
+    hash ^= zobrist::MoveHash(c, stones[c]);
   }
   return hash;
 }
 
-Position::Position(BoardVisitor* bv, GroupVisitor* gv, Color to_play)
-    : board_visitor_(bv), group_visitor_(gv), to_play_(to_play) {
-  // All moves are initially legal.
-  std::fill(legal_moves_.begin(), legal_moves_.end(), true);
-}
-
-Position::Position(BoardVisitor* bv, GroupVisitor* gv, const Position& position)
-    : Position(position) {
-  board_visitor_ = bv;
-  group_visitor_ = gv;
-}
+Position::Position(Color to_play) : to_play_(to_play) {}
 
 Position::UndoState Position::PlayMove(Coord c, Color color,
                                        ZobristHistory* zobrist_history) {
@@ -94,8 +137,6 @@ Position::UndoState Position::PlayMove(Coord c, Color color,
   to_play_ = OtherColor(to_play_);
   UpdateLegalMoves(zobrist_history);
 
-  MG_DCHECK(stone_hash_ == CalculateStoneHash(stones_));
-
   return undo;
 }
 
@@ -103,70 +144,101 @@ void Position::UndoMove(const UndoState& undo,
                         ZobristHistory* zobrist_history) {
   to_play_ = undo.to_play;
   ko_ = undo.ko;
-  Coord c = undo.c;
+  n_ -= 1;
+  Coord undo_c = undo.c;
 
-  if (c != Coord::kPass) {
-    auto undo_color = stones_[c].color();
-    auto undo_group_id = stones_[c].group_id();
+  if (undo_c != Coord::kPass) {
+    auto undo_color = point_color(undo_c);
     MG_CHECK(undo_color != Color::kEmpty);
+    auto undo_head = chain_head(undo_c);
+    auto undo_next = chain_next(undo_c);
+    auto size = points_[undo_head].bits & Point::kSizeBits;
+
+    // Unlink the stone from the chain.
+    // We'll update the chain size and liberty count after.
+    if (undo_c == undo_head) {
+      // Removing the head of a chain.
+      if (undo_next != Coord::kInvalid) {
+        // The chain is larger than one stone:
+        //  - copy the number of liberties & chain size from the old head.
+        //  - update the rest of the stones to point to the new head.
+        points_[undo_next].liberties_prev = points_[undo_c].liberties_prev;
+        points_[undo_next].bits =
+            (points_[undo_next].bits & ~Point::kSizeBits) | size |
+            Point::kIsHeadBit;
+
+        // Update the chain's head to the next stone in the chain.
+        // TODO(tommadams): there's a minor opitimization available here: if
+        // removing this stone would split a chain then we can avoid updating
+        // all the stones' head references here because we'll just recompute the
+        // chain later.
+        undo_head = undo_next;
+        for (auto chain_c = chain_next(undo_next); chain_c != Coord::kInvalid;
+             chain_c = chain_next(chain_c)) {
+          points_[chain_c].bits =
+              (points_[chain_c].bits & ~Point::kSizeBits) | undo_head;
+        }
+      }
+    } else {
+      // Removing a non-head stone: patch next & previous.
+      auto undo_prev = points_[undo_c].liberties_prev;
+      points_[undo_prev].next = undo_next;
+      if (undo_next != Coord::kInvalid) {
+        points_[undo_next].liberties_prev = undo_prev;
+      }
+    }
 
     // Remove the stone from the board.
-    stones_[c] = {};
-    stone_hash_ ^= zobrist::MoveHash(c, undo_color);
+    points_[undo_c] = {};
+    stone_hash_ ^= zobrist::MoveHash(undo_c, undo_color);
 
-    // Update the liberty counts of neighboring groups and count how many
-    // neighboring stones belong to the same group as the stone removed by the
-    // undo. If there are more than one neighbors in the same group, the group
+    // Update the liberty counts of neighboring chains and count how many
+    // neighboring stones belong to the same chain as the stone removed by the
+    // undo. If there are more than one neighbors in the same chain, the chain
     // may have been split by the removal of this stone.
-    tiny_set<GroupId, 4> neighbor_groups;
-    int num_group_neighbors = 0;
+    tiny_set<Coord, 4> neighbor_chains;
+    int num_chain_neighbors = 0;
     int num_lost_liberties = 0;
-    for (auto nc : kNeighborCoords[c]) {
-      if (stones_[nc].empty()) {
+    for (auto nc : kNeighborCoords[undo_c]) {
+      if (is_empty(nc)) {
         // A liberty isn't lost if it's also the liberty of another stone in the
-        // same group.
-        if (!HasNeighboringGroup(nc, undo_group_id)) {
+        // same chain.
+        if (!HasNeighboringChain(nc, undo_head)) {
           num_lost_liberties += 1;
         }
         continue;
       }
-      auto ng = stones_[nc].group_id();
-      if (ng == undo_group_id) {
-        num_group_neighbors += 1;
+      auto nh = chain_head(nc);
+      if (nh == undo_head) {
+        num_chain_neighbors += 1;
       }
-      if (neighbor_groups.insert(ng)) {
-        groups_[ng].num_liberties += 1;
+      if (neighbor_chains.insert(nh)) {
+        points_[nh].liberties_prev += 1;
       }
     }
 
-    if (num_group_neighbors > 1) {
+    if (num_chain_neighbors > 1) {
+      TaggedPointVisitor visitor(Coord::kInvalid);
+
       // The stone removed by this undo had more than one neighbor of the same
-      // color: it's possible that the removal of this stone has split a group.
-      // Assign a new group for each neighbor of the same color. If multiple
-      // neighbors are part of the same group, the first call to AssignNewGroup
-      // will change the remaining neighbors' group IDs, so they're no longer
-      // undo_group_id.
-      for (auto nc : kNeighborCoords[c]) {
-        if (stones_[nc].color() == undo_color &&
-            stones_[nc].group_id() == undo_group_id) {
-          AssignNewGroup(nc);
+      // color: it's possible that the removal of this stone has split a chain.
+      for (auto nc : kNeighborCoords[undo_c]) {
+        if (point_color(nc) == undo_color && !visitor.HasAnyVisit(nc)) {
+          RebuildChain(nc, &visitor);
         }
       }
-      groups_.free(undo_group_id);
     } else {
-      groups_[undo_group_id].size -= 1;
-      if (groups_[undo_group_id].size == 0) {
-        groups_.free(undo_group_id);
-      } else {
-        groups_[undo_group_id].num_liberties -= num_lost_liberties;
+      if (size > 1) {
+        points_[undo_head].bits -= 1;
+        points_[undo_head].liberties_prev -= num_lost_liberties;
       }
     }
 
     // Put any captured stones back on the board, updating their neighbouring
-    // groups' liberty counts.
+    // chains' liberty counts.
     auto other_color = OtherColor(undo_color);
     for (auto cc : undo.captures) {
-      UncaptureGroup(other_color, c, cc);
+      UncaptureChain(other_color, undo_c, cc);
     }
   }
 
@@ -178,7 +250,7 @@ std::string Position::ToSimpleString() const {
   for (int row = 0; row < kN; ++row) {
     for (int col = 0; col < kN; ++col) {
       Coord c(row, col);
-      auto color = stones_[c].color();
+      auto color = point_color(c);
       if (color == Color::kWhite) {
         oss << "O";
       } else if (color == Color::kBlack) {
@@ -215,7 +287,7 @@ std::string Position::ToPrettyString(bool use_ansi_colors) const {
     oss << absl::StreamFormat("%2d ", kN - row);
     for (int col = 0; col < kN; ++col) {
       Coord c(row, col);
-      auto color = stones_[c].color();
+      auto color = point_color(c);
       if (color == Color::kWhite) {
         oss << print_white << "O ";
       } else if (color == Color::kBlack) {
@@ -236,232 +308,285 @@ inline_vector<Coord, 4> Position::AddStoneToBoard(Coord c, Color color) {
   auto opponent_color = OtherColor(color);
 
   // Traverse the coord's neighbors, building useful information:
-  //  - list of captured groups (if any).
+  //  - list of captured chains (if any).
   //  - coordinates of the new stone's liberties.
-  //  - set of neighboring groups of each color.
-  inline_vector<std::pair<GroupId, Coord>, 4> captured_groups;
+  //  - set of neighboring chains of the player's color.
+  inline_vector<Coord, 4> captured_neighbors;
   inline_vector<Coord, 4> liberties;
-  tiny_set<GroupId, 4> opponent_groups;
-  tiny_set<GroupId, 4> neighbor_groups;
+  tiny_set<Coord, 4> opponent_chains;
+  tiny_set<Coord, 4> player_chains;
   for (auto nc : kNeighborCoords[c]) {
-    auto neighbor = stones_[nc];
-    auto neighbor_color = neighbor.color();
-    auto neighbor_group_id = neighbor.group_id();
+    auto neighbor_color = point_color(nc);
     if (neighbor_color == Color::kEmpty) {
       // Remember the coord of this liberty.
       liberties.push_back(nc);
-    } else if (neighbor_color == color) {
-      // Remember neighboring groups of same color.
-      neighbor_groups.insert(neighbor_group_id);
-    } else if (neighbor_color == opponent_color) {
-      // Decrement neighboring opponent group liberty counts and remember the
-      // groups we have captured. We'll remove them from the board shortly.
-      if (opponent_groups.insert(neighbor_group_id)) {
-        Group& opponent_group = groups_[neighbor_group_id];
-        if (--opponent_group.num_liberties == 0) {
-          captured_groups.emplace_back(neighbor_group_id, nc);
+      continue;
+    }
+
+    auto nh = chain_head(nc);
+    if (neighbor_color == color) {
+      // Remember neighboring chains of same color.
+      player_chains.insert(nh);
+    } else {
+      // Decrement neighboring opponent chain liberty counts and remember the
+      // chains we will capture. We'll remove them from the board shortly.
+      if (opponent_chains.insert(nh)) {
+        if (--points_[nh].liberties_prev == 0) {
+          captured_neighbors.push_back(nc);
         }
       }
     }
   }
 
   // Place the new stone on the board.
-  if (neighbor_groups.empty()) {
-    // The stone doesn't connect to any neighboring groups: create a new group.
-    stones_[c] = {color, groups_.alloc(1, liberties.size())};
+  auto color_bits = (static_cast<uint16_t>(color) << Point::kColorShift);
+  if (player_chains.empty()) {
+    // The stone doesn't connect to any neighbors: create a new chain.
+    constexpr uint16_t chain_size = 1;
+    points_[c].liberties_prev = liberties.size();
+    points_[c].next = Coord::kInvalid;
+    points_[c].bits = color_bits | Point::kIsHeadBit | chain_size;
   } else {
-    // The stone connects to at least one neighbor: merge it into the first
-    // group we found.
-    auto group_id = neighbor_groups[0];
-    if (neighbor_groups.size() == 1) {
-      // Only one neighbor: update the group's size and liberty count, being
-      // careful not to add count coords that were already liberties of the
-      // group.
-      Group& group = groups_[group_id];
-      ++group.size;
-      --group.num_liberties;
+    // Designate the first chain in `player_chains` the primary chain. All
+    // chains that the newly placed stone connect together will be spliced into
+    // this primary chain.
+    auto primary_head = player_chains[0];
+
+    // If newly placed stone only connects to one existing chain we can update
+    // its liberty counts directly. If the new stone connects multiple chains,
+    // we'll recompute the liberties from scratch later.
+    if (player_chains.size() == 1) {
+      int liberty_delta = -1;
       for (auto nc : liberties) {
-        if (!HasNeighboringGroup(nc, group_id)) {
-          ++group.num_liberties;
+        if (!HasNeighboringChain(nc, primary_head)) {
+          liberty_delta += 1;
         }
       }
-      stones_[c] = {color, group_id};
-    } else {
-      // The stone joins multiple groups, merge them.
-      // Incrementally updating the merged liberty counts is hard, so we just
-      // recalculate the merged group's size and liberty count from scratch.
-      // This is the relatively infrequent slow path.
-      stones_[c] = {color, group_id};
-      MergeGroup(c);
-      for (int i = 1; i < neighbor_groups.size(); ++i) {
-        groups_.free(neighbor_groups[i]);
+      points_[primary_head].liberties_prev += liberty_delta;
+    }
+
+    // First, insert the newly placed stone into the primary chain immediately
+    // after its head.
+    points_[c].liberties_prev = primary_head;
+    points_[c].next = points_[primary_head].next;
+    points_[c].bits = color_bits | primary_head;
+    if (points_[c].next != Coord::kInvalid) {
+      points_[points_[c].next].liberties_prev = c;
+    }
+    points_[primary_head].next = c;
+    points_[primary_head].bits += 1;
+
+    // Splice any remaining neighbor chains into the primary chain. The new
+    // chains are spliced in before the newly placed stone. On the first
+    // iteration through the loop, the splice point is between the primary
+    // chain's head and the new stone; on subsequent iterations it is between
+    // the previously spliced chain and the newly placed stone.
+    for (int i = 1; i < player_chains.size(); ++i) {
+      // Splice the head of this chain in after the primary head.
+      auto splice_prev = points_[c].liberties_prev;
+      auto splice_head = player_chains[i];
+      points_[primary_head].bits += chain_size(splice_head);
+      points_[splice_prev].next = splice_head;
+      points_[splice_head].liberties_prev = splice_prev;
+
+      // Clear the "is head" bit of the spliced chain's head.
+      points_[splice_head].bits &= ~Point::kIsHeadBit;
+
+      for (auto splice_c = splice_head;; splice_c = chain_next(splice_c)) {
+        // Update the head references for all stones in the spliced chain.
+        points_[splice_c].bits =
+            (points_[splice_c].bits & ~Point::kSizeBits) | primary_head;
+        if (points_[splice_c].next == Coord::kInvalid) {
+          // Splice the tail of this chain in before the newly placed stone.
+          points_[splice_c].next = c;
+          points_[c].liberties_prev = splice_c;
+          break;
+        }
       }
     }
+
+    // The newly placed stone joined multiple chains, recompute liberties from
+    // scratch.
+    if (player_chains.size() > 1) {
+      OneTimePointVisitor visitor;
+      int num_liberties = 0;
+      for (auto chain_c = primary_head; chain_c != Coord::kInvalid;
+           chain_c = points_[chain_c].next) {
+        for (auto nc : kNeighborCoords[chain_c]) {
+          if (is_empty(nc) && visitor.Visit(nc)) {
+            num_liberties += 1;
+          }
+        }
+      }
+      points_[primary_head].liberties_prev = num_liberties;
+    }
   }
+
   stone_hash_ ^= zobrist::MoveHash(c, color);
 
-  // Remove captured groups.
-  inline_vector<Coord, 4> captured_coords;
-  for (const auto& p : captured_groups) {
-    int num_captured_stones = groups_[p.first].size;
+  // Update ko.
+  if (captured_neighbors.size() == 1 && potential_ko == opponent_color &&
+      chain_size(captured_neighbors[0]) == 1) {
+    ko_ = captured_neighbors[0];
+  } else {
+    ko_ = Coord::kInvalid;
+  }
+
+  // Remove captured chains.
+  for (auto nc : captured_neighbors) {
+    int num_captured_stones = chain_size(nc);
     if (color == Color::kBlack) {
       num_captures_[0] += num_captured_stones;
     } else {
       num_captures_[1] += num_captured_stones;
     }
-    RemoveGroup(p.second);
-    captured_coords.push_back(p.second);
+    RemoveChain(nc);
   }
 
-  // Update ko.
-  if (captured_groups.size() == 1 &&
-      groups_[captured_groups[0].first].size == 1 &&
-      potential_ko == opponent_color) {
-    ko_ = captured_groups[0].second;
-  } else {
-    ko_ = Coord::kInvalid;
-  }
+#ifndef NDEBUG
+  Validate();
+#endif
 
-  return captured_coords;
+  return captured_neighbors;
 }
 
-void Position::RemoveGroup(Coord c) {
-  // Remember the first stone from the group we're about to remove.
-  auto removed_color = stones_[c].color();
+void Position::RemoveChain(Coord c) {
+  auto removed_color = point_color(c);
   auto other_color = OtherColor(removed_color);
-  auto removed_group_id = stones_[c].group_id();
 
-  board_visitor_->Begin();
-  board_visitor_->Visit(c);
-  while (!board_visitor_->Done()) {
-    c = board_visitor_->Next();
-
-    MG_CHECK(stones_[c].group_id() == removed_group_id);
-    stones_[c] = {};
+  c = chain_head(c);
+  for (;;) {
     stone_hash_ ^= zobrist::MoveHash(c, removed_color);
-    tiny_set<GroupId, 4> other_groups;
+    tiny_set<Coord, 4> other_chains;
     for (auto nc : kNeighborCoords[c]) {
-      auto ns = stones_[nc];
-      auto neighbor_color = ns.color();
-      auto neighbor_group_id = ns.group_id();
-      if (neighbor_color == other_color) {
-        if (other_groups.insert(neighbor_group_id)) {
-          ++groups_[neighbor_group_id].num_liberties;
-        }
-      } else if (neighbor_color == removed_color) {
-        board_visitor_->Visit(nc);
-      }
-    }
-  }
-
-  groups_.free(removed_group_id);
-}
-
-void Position::MergeGroup(Coord c) {
-  Stone s = stones_[c];
-  Color color = s.color();
-  Color opponent_color = OtherColor(color);
-  Group& group = groups_[s.group_id()];
-  group.num_liberties = 0;
-  group.size = 0;
-
-  board_visitor_->Begin();
-  board_visitor_->Visit(c);
-  while (!board_visitor_->Done()) {
-    c = board_visitor_->Next();
-    if (stones_[c].color() == Color::kEmpty) {
-      ++group.num_liberties;
-    } else {
-      MG_CHECK(stones_[c].color() == color);
-      ++group.size;
-      stones_[c] = s;
-      for (auto nc : kNeighborCoords[c]) {
-        if (stones_[nc].color() != opponent_color) {
-          // We visit neighboring stones of the same color and empty coords.
-          // Visiting empty coords through the BoardVisitor API ensures that
-          // each one is only counted as a liberty once, even if it is
-          // neighbored by multiple stones in this group.
-          board_visitor_->Visit(nc);
+      if (point_color(nc) == other_color) {
+        auto nh = chain_head(nc);
+        if (other_chains.insert(nh)) {
+          points_[nh].liberties_prev += 1;
         }
       }
     }
+
+    // Get the next point in the chain before clearing the current point.
+    auto next = chain_next(c);
+    points_[c] = {};
+    if (next == Coord::kInvalid) {
+      break;
+    }
+    c = next;
   }
 }
 
-GroupId Position::UncaptureGroup(Color color, Coord capture_c, Coord group_c) {
-  // Allocate a new group. Since this new group was previously captured by the
-  // move at capture_c, by definition it must only have one liberty.
-  // Initialize the group's size to zero and increment it as we put stones on
-  // the board.
-  auto group_id = groups_.alloc(0, 1);
+void Position::UncaptureChain(Color color, Coord capture_c, Coord chain_c) {
   auto other_color = OtherColor(color);
+  auto color_bits = static_cast<uint16_t>(color) << Point::kColorShift;
 
-  auto* bv = board_visitor_;
-  bv->Begin();
-  bv->Visit(group_c);
-  while (!bv->Done()) {
-    auto c = bv->Next();
-    stones_[c] = {color, group_id};
+  // Create a new chain whose head is at `chain_c`.
+  auto head = chain_c;
+  CoordStack coord_stack;
+  coord_stack.push(head);
+  points_[head].bits = color_bits;
+
+  auto prev = chain_c;
+  int size = 0;
+  while (!coord_stack.empty()) {
+    auto c = coord_stack.pop();
     stone_hash_ ^= zobrist::MoveHash(c, color);
-    groups_[group_id].size += 1;
-    tiny_set<GroupId, 4> neighbor_groups;
+    size += 1;
+
+    // Patch the chain's linked list references.
+    points_[c].liberties_prev = prev;
+    points_[prev].next = c;
+    prev = c;
+
+    tiny_set<Coord, 4> neighbor_chains;
     for (auto nc : kNeighborCoords[c]) {
       if (nc != capture_c) {
-        auto ns = stones_[nc];
-        auto neighbor_color = ns.color();
+        auto neighbor_color = points_[nc].color();
         if (neighbor_color == Color::kEmpty) {
-          bv->Visit(nc);
-        } else if (neighbor_color == other_color &&
-                   neighbor_groups.insert(ns.group_id())) {
-          groups_[ns.group_id()].num_liberties -= 1;
+          // Set the stone color immediately so that the point is no longer
+          // empty. We'll patch the list next & prev references when nc is
+          // popped off the coord stack.
+          points_[nc].bits = color_bits | head;
+          coord_stack.push(nc);
+        } else if (neighbor_color == other_color) {
+          auto nh = chain_head(nc);
+          if (neighbor_chains.insert(nh)) {
+            points_[nh].liberties_prev -= 1;
+          }
         }
       }
     }
   }
 
-  return group_id;
+  // At the end of the loop, prev is the chain tail: make sure next is
+  // invalidated.
+  points_[prev].next = Coord::kInvalid;
+
+  // By definition, the uncaptured chain must have only one liberty.
+  points_[head].liberties_prev = 1;
+  points_[head].bits = color_bits | Point::kIsHeadBit | size;
 }
 
-void Position::AssignNewGroup(Coord c) {
-  auto color = stones_[c].color();
-  MG_CHECK(color != Color::kEmpty);
+void Position::RebuildChain(Coord c, TaggedPointVisitor* visitor) {
+  auto color = point_color(c);
   auto other_color = OtherColor(color);
+  auto color_bits = (static_cast<uint16_t>(color) << Point::kColorShift);
 
-  auto group_id = groups_.alloc(0, 0);
+  auto head = c;
+  auto prev = c;
+  int num_liberties = 0;
+  int size = 0;
 
-  auto* bv = board_visitor_;
-  bv->Begin();
-  bv->Visit(c);
-  while (!bv->Done()) {
-    auto c = bv->Next();
-    if (stones_[c].color() == Color::kEmpty) {
-      groups_[group_id].num_liberties += 1;
-    } else {
-      stones_[c] = {color, group_id};
-      groups_[group_id].size += 1;
-      for (auto nc : kNeighborCoords[c]) {
-        if (stones_[nc].color() != other_color) {
-          bv->Visit(nc);
-        }
+  CoordStack coord_stack;
+  coord_stack.push(c);
+  visitor->Visit(c, head);
+
+  while (!coord_stack.empty()) {
+    c = coord_stack.pop();
+    size += 1;
+
+    points_[c].liberties_prev = prev;
+    points_[c].bits = color_bits | head;
+    points_[prev].next = c;
+    prev = c;
+
+    for (auto nc : kNeighborCoords[c]) {
+      auto neighbor_color = points_[nc].color();
+      if (neighbor_color == other_color || !visitor->Visit(nc, head)) {
+        continue;
+      }
+
+      if (neighbor_color == Color::kEmpty) {
+        num_liberties += 1;
+      } else {
+        coord_stack.push(nc);
       }
     }
   }
+
+  // At the end of the loop, prev is the chain tail: make sure next is
+  // invalidated.
+  points_[prev].next = Coord::kInvalid;
+
+  points_[head].liberties_prev = num_liberties;
+  points_[head].bits = color_bits | Point::kIsHeadBit | size;
 }
 
 Color Position::IsKoish(Coord c) const {
-  if (!stones_[c].empty()) {
+  if (!is_empty(c)) {
     return Color::kEmpty;
   }
 
   Color ko_color = Color::kEmpty;
   for (Coord nc : kNeighborCoords[c]) {
-    Stone s = stones_[nc];
-    if (s.empty()) {
+    auto color = point_color(nc);
+    if (color == Color::kEmpty) {
       return Color::kEmpty;
     }
-    if (s.color() != ko_color) {
+    if (color != ko_color) {
       if (ko_color == Color::kEmpty) {
-        ko_color = s.color();
+        ko_color = color;
       } else {
         return Color::kEmpty;
       }
@@ -474,44 +599,38 @@ Position::MoveType Position::ClassifyMove(Coord c) const {
   if (c == Coord::kPass || c == Coord::kResign) {
     return MoveType::kNoCapture;
   }
-  if (!stones_[c].empty()) {
-    return MoveType::kIllegal;
-  }
-  if (c == ko_) {
+  if (!is_empty(c) || c == ko_) {
     return MoveType::kIllegal;
   }
 
   auto result = MoveType::kIllegal;
   auto other_color = OtherColor(to_play_);
   for (auto nc : kNeighborCoords[c]) {
-    Stone s = stones_[nc];
-    if (s.empty()) {
+    auto color = point_color(nc);
+    if (color == Color::kEmpty) {
       // At least one liberty at nc after playing at c.
-      if (result == MoveType::kIllegal) {
-        result = MoveType::kNoCapture;
+      result = MoveType::kNoCapture;
+      continue;
+    }
+
+    auto num_liberties = num_chain_liberties(nc);
+    if (color == other_color) {
+      if (num_liberties == 1) {
+        // Will capture opponent chain that has a stone at nc.
+        return MoveType::kCapture;
       }
-    } else if (s.color() == other_color) {
-      if (groups_[s.group_id()].num_liberties == 1) {
-        // Will capture opponent group that has a stone at nc.
-        result = MoveType::kCapture;
-      }
-    } else {
-      if (groups_[s.group_id()].num_liberties > 1) {
-        // Connecting to a same colored group at nc that has more than one
-        // liberty.
-        if (result == MoveType::kIllegal) {
-          result = MoveType::kNoCapture;
-        }
-      }
+    } else if (num_liberties > 1) {
+      // Connecting to a same colored chain at nc that has more than one
+      // liberty.
+      result = MoveType::kNoCapture;
     }
   }
   return result;
 }
 
-bool Position::HasNeighboringGroup(Coord c, GroupId group_id) const {
+bool Position::HasNeighboringChain(Coord c, Coord ch) const {
   for (auto nc : kNeighborCoords[c]) {
-    Stone s = stones_[nc];
-    if (!s.empty() && s.group_id() == group_id) {
+    if (!is_empty(nc) && chain_head(nc) == ch) {
       return true;
     }
   }
@@ -526,27 +645,32 @@ float Position::CalculateScore(float komi) {
   auto territories = CalculatePassAliveRegions();
   for (int i = 0; i < kN * kN; ++i) {
     if (territories[i] == Color::kEmpty) {
-      territories[i] = stones_[i].color();
+      territories[i] = points_[i].color();
     }
   }
 
+  OneTimePointVisitor visitor;
+
   int score = 0;
-  auto* bv = board_visitor_;
-  auto score_empty_area = [bv, &territories](Coord c) {
+  auto score_empty_area = [&visitor, &territories](Coord c) {
+    CoordStack coord_stack;
     int num_visited = 0;
     int found_bits = 0;
-    do {
-      c = bv->Next();
+    for (;;) {
       ++num_visited;
       for (auto nc : kNeighborCoords[c]) {
         auto color = territories[nc];
-        if (color == Color::kEmpty) {
-          bv->Visit(nc);
+        if (color == Color::kEmpty && visitor.Visit(nc)) {
+          coord_stack.push(nc);
         } else {
           found_bits |= static_cast<int>(color);
         }
       }
-    } while (!bv->Done());
+      if (coord_stack.empty()) {
+        break;
+      }
+      c = coord_stack.pop();
+    }
 
     if (found_bits == 1) {
       return num_visited;
@@ -557,20 +681,16 @@ float Position::CalculateScore(float komi) {
     }
   };
 
-  bv->Begin();
-  for (int row = 0; row < kN; ++row) {
-    for (int col = 0; col < kN; ++col) {
-      Coord c(row, col);
-      auto color = territories[c];
-      if (color == Color::kEmpty) {
-        if (bv->Visit(c)) {
-          score += score_empty_area(c);
-        }
-      } else if (color == Color::kBlack) {
-        score += 1;
-      } else {
-        score -= 1;
+  for (int i = 0; i < kN * kN; ++i) {
+    auto color = territories[i];
+    if (color == Color::kEmpty) {
+      if (visitor.Visit(i)) {
+        score += score_empty_area(i);
       }
+    } else if (color == Color::kBlack) {
+      score += 1;
+    } else {
+      score -= 1;
     }
   }
 
@@ -588,7 +708,7 @@ std::array<Color, kN * kN> Position::CalculatePassAliveRegions() const {
 }
 
 // A _region_ is a connected set of intersections regardless of color.
-// A _black-enclosed region_ is a maximum region containig no black stones.
+// A _black-enclosed region_ is a maximal region containing no black stones.
 // A black-enclosed region is _small_ if all of its empty intersections are
 // liberties of the enclosing black stones.
 // A small black-enclosed region is _vital_ to an enclosing chain if all of its
@@ -623,320 +743,301 @@ std::array<Color, kN * kN> Position::CalculatePassAliveRegions() const {
 //   https://senseis.xmp.net/?BensonsDefinitionOfUnconditionalLife
 void Position::CalculatePassAliveRegionsForColor(
     Color color, std::array<Color, kN * kN>* result) const {
-  constexpr auto kMaxNumRegions = (kN * kN + 1) / 2 + 1;
-  constexpr auto kMaxNumGroups = kN * kN;  // A safe over-estimate
-
-  struct BensonGroup {
-    explicit BensonGroup(int liberties_begin)
-        : liberties_begin(static_cast<uint16_t>(liberties_begin)) {}
-    // This group's liberties.
-    // See the comments for the liberties array below for more details.
-    uint16_t liberties_begin;
-    uint16_t num_liberties = 0;
-
-    // The number of vital regions that this group encloses. The BensonGroup
+  // Extra per-chain data required by this implementation of Benson's algorithm.
+  struct BensonChain {
+    // The number of vital regions that this chain encloses. The BensonChain
     // itself doesn't keep track of which of its neighboring regions are vital,
-    // it is sufficient for the BensonGroup to track which of its enclosing
-    // groups are vital.
+    // it is sufficient for the BensonChain to track which of its enclosing
+    // chains are vital.
     uint16_t num_vital_regions = 0;
 
-    // Whether the group has been determined to be pass-alive.
+    // Whether the chain has been determined to be pass-alive.
     bool is_pass_alive = false;
+
+    std::vector<Coord> enclosed_regions;
   };
 
+  // Extra per-region data required by this implementation of Benson's
+  // algorithm.
   struct BensonRegion {
-    BensonRegion(int empty_points_begin, int groups_begin)
+    BensonRegion(int empty_points_begin, int num_empty_points)
         : empty_points_begin(static_cast<uint16_t>(empty_points_begin)),
-          groups_begin(static_cast<uint16_t>(groups_begin)) {}
+          num_empty_points(static_cast<uint16_t>(num_empty_points)) {}
     // This region's empty points.
     // See the comments for the regions array below for more details.
     uint16_t empty_points_begin;
-    uint16_t num_empty_points = 0;
+    uint16_t num_empty_points;
 
-    // This region's groups.
-    // See the comments for the groups array below for more details.
-    uint16_t groups_begin;
-    uint16_t num_enclosing_groups = 0;
-    uint16_t num_vital_groups = 0;
+    // This region's chains.
+    // See the comments for the chains array below for more details.
+    uint16_t vital_chains_begin;
+    uint16_t num_vital_chains = 0;
+
+    std::vector<Coord> vital_chains;
+
+    // A scratch variable that get reused while determining which regions are
+    // vital for each chain.
+    uint16_t num_liberties_of_chain = 0;
+
+    // A scratch variable that get reused while determining which regions each
+    // chain encloses.
+    Coord most_recent_chain = Coord::kInvalid;
+
+    // The number of chains that enclose this region.
+    // We don't actually need to know which chains they are.
+    uint16_t num_enclosing_chains = 0;
 
     // Whether the region has been determined to be pass-alive.
-    bool is_pass_alive = false;
+    bool is_pass_alive = true;
   };
-
-  // Storage for liberties of all groups.
-  // Each BensonGroup has num_liberties liberties. The coordinates of the
-  // i'th liberty of a group are stored at:
-  //   liberties[group->liberties_begin + i].
-  // We over allocate by 4x because during the process of computing liberties,
-  // each liberty may be added mulitple times (before deduplication happens
-  // later).
-  // The list of liberties for each BensonGroup is sorted by coordinate,
-  // so that the list of vital regions for a group can be efficiently found.
-  inline_vector<Coord, kMaxNumGroups * 4> liberties;
 
   // Storage for coordinates of empty points in regions.
   // Each BensonRegion has BensonRegion::num_empty_points empty points. The
   // coordinates of the i'th empty point of a region are stored at
   //   empty_points[region->empty_points_begin + i].
-  // The list of empty points for each BensonRegion is sorted by coordinate,
-  // so that the list of vital regions for a group can be efficiently found.
   inline_vector<Coord, kN * kN> empty_points;
 
-  // The set of groups for which we're trying to find the pass-alive ones.
-  inline_vector<BensonGroup, kMaxNumGroups> groups;
+  // The set of chains for which we're trying to find the pass-alive ones.
+  // Indexed by chain_head(c).
+  PointMap<BensonChain> chains;
 
   // The set of regions for which we're trying to find the pass-alive ones.
-  inline_vector<BensonRegion, kMaxNumRegions> regions;
+  PointMap<BensonRegion> regions;
 
-  // Each BensonRegion keeps track of two lists of groups:
-  //  - enclosing group i is stored at:
-  //      region_groups[region->groups_begin + i]
-  //  - vital group j is stored at:
-  //      region_groups[region->groups_begin + region->num_enclosing_groups + j]
-  inline_vector<uint16_t, 4 * kMaxNumGroups> region_groups;
+  // If a point c is in an enclosed region (i.e. empty or other_color), then
+  // region_indices[c] is the index into the regions array of that region.
+  std::array<Coord, kN * kN> region_indices;
+  for (auto& x : region_indices) {
+    x = Coord::kInvalid;
+  }
 
-  // For each point c on the board:
-  //  - if the point is in an enclosed region (i.e. empty or other_color), then
-  //    indices[c] is the index into the regions array of that region.
-  //  - if the point is in an group of color, then indices[c] is the index into
-  //    the groups array of that group.
-  std::array<uint16_t, kN * kN> indices;
+  // region_chains[region->chains_begin + region->num_enclosing_chains + j]
+  inline_vector<Coord, 2 * kN * kN> vital_chains;
 
-  // Initialize the set of groups.
-  board_visitor_->Begin();
-  for (int row = 0; row < kN; ++row) {
-    for (int col = 0; col < kN; ++col) {
-      Coord c(row, col);
-      if (stones_[c].color() != color || !board_visitor_->Visit(c)) {
-        continue;
+  // Used when flood-filling regions.
+  CoordStack coord_stack;
+
+  // +-------------------------+
+  // | Initialize the regions. |
+  // +-------------------------+
+  for (int idx = 0; idx < kN * kN; ++idx) {
+    Coord region_c(idx);
+    if (points_[region_c].color() == color ||
+        region_indices[region_c] != Coord::kInvalid) {
+      // This point either has a stone of the color we're computing pass-alive
+      // territory for, or we've already processed it.
+      continue;
+    }
+
+    // This is a new region!
+    // We will do a few things to initialize it:
+    //  - Construct a new BensonRegion at regions[region_c].
+    //  - Flood fill region_c into region_indices in all the regions points, so
+    //    we can look up the BensonRegion from any point in the region.
+    //  - Remember the list of empty points in the region for use later.
+    int empty_points_begin = empty_points.size();
+    region_indices[region_c] = region_c;
+
+    coord_stack.push(region_c);
+    while (!coord_stack.empty()) {
+      auto c = coord_stack.pop();
+
+      if (is_empty(c)) {
+        empty_points.push_back(c);
       }
 
-      // We've found a new group.
-      // Visit each stone in the group, building the list of liberties for the
-      // group and initializing the indices array so that the group can be
-      // quickly found by a Coord on the board.
-      auto group_idx = static_cast<uint16_t>(groups.size());
-      groups.emplace_back(liberties.size());
-      auto& g = groups[group_idx];
-      while (!board_visitor_->Done()) {
-        c = board_visitor_->Next();
-        indices[c] = group_idx;
-
-        for (auto nc : kNeighborCoords[c]) {
-          auto ns = stones_[nc];
-          if (ns.empty()) {
-            // This will potentially add the same liberty up to four times; we
-            // will remove duplicates shortly.
-            liberties.push_back(nc);
-            g.num_liberties += 1;
-          } else if (ns.color() == color) {
-            board_visitor_->Visit(nc);
-          }
+      for (auto nc : kNeighborCoords[c]) {
+        if (points_[nc].color() != color &&
+            region_indices[nc] == Coord::kInvalid) {
+          region_indices[nc] = region_c;
+          coord_stack.push(nc);
         }
       }
+    }
+    int num_empty_points = empty_points.size() - empty_points_begin;
+    regions.emplace(region_c, empty_points_begin, num_empty_points);
+  }
 
-      if (g.num_liberties > 1) {
-        // Sort all liberties and remove duplicates.
-        auto* liberties_begin = &liberties[g.liberties_begin];
-        auto* liberties_end = liberties_begin + g.num_liberties;
-        std::sort(liberties_begin, liberties_end);
-        auto unique_end = std::unique(liberties_begin, liberties_end);
-        g.num_liberties =
-            static_cast<uint16_t>(std::distance(liberties_begin, unique_end));
+  // +------------------------+
+  // | Initialize the chains. |
+  // +------------------------+
+  TaggedPointVisitor visitor(Coord::kInvalid);
+  for (int idx = 0; idx < kN * kN; ++idx) {
+    Coord c(idx);
+    if (points_[c].color() != color) {
+      continue;
+    }
+    Coord head = chain_head(c);
+    if (!visitor.Visit(c, head)) {
+      continue;
+    }
 
-        // Release the duplicate liberties we just removed back to the pool.
-        liberties.resize(g.liberties_begin + g.num_liberties);
+    // This is a new chain!
+    // We do a lot of things to initialize it:
+    //  - Construct a BansonChain at the same location as the chain's head, so
+    //    it's easy to find.
+    //  - For every region that the chain encloses:
+    //     - Add the region to the chain's enclosed regions list.
+    //     - Increment the region's enclosing chain count.
+    //     - Count how many of the region's empty points are liberties for this
+    //       chain.
+    //    Because we process chains serially (one chain is fully processed
+    //    before we move on to the next one), the above per-region steps reuse
+    //    some scratch member variables in the BensionRegions for simplicity.
+    auto& chain = chains.emplace(head);
+    for (auto chain_c = head; chain_c != Coord::kInvalid;
+         chain_c = chain_next(chain_c)) {
+      visitor.Visit(chain_c, head);
+      for (auto nc : kNeighborCoords[chain_c]) {
+        auto neighbor_color = points_[nc].color();
+        if (neighbor_color == color || !visitor.Visit(nc, head)) {
+          continue;
+        }
+
+        auto region_idx = region_indices[nc];
+        auto& region = regions[region_idx];
+        if (region.most_recent_chain != head) {
+          // This is the first liberty of this chain that is an empty point of
+          // this region. Do some bookkeeping.
+          region.most_recent_chain = head;
+          region.num_enclosing_chains += 1;
+          region.num_liberties_of_chain = 0;
+          chain.enclosed_regions.push_back(region_idx);
+        }
+        if (points_[nc].is_empty()) {
+          region.num_liberties_of_chain += 1;
+        }
+      }
+    }
+
+    // Now that we've counted how many of the chain's liberties are empty points
+    // of each neighboring region, it's trivial to figure out which of the
+    // regions are vital for the chain.
+    for (auto region_idx : chain.enclosed_regions) {
+      if (regions[region_idx].num_liberties_of_chain ==
+          regions[region_idx].num_empty_points) {
+        chain.num_vital_regions += 1;
+        regions[region_idx].vital_chains.push_back(head);
       }
     }
   }
 
-  // Build the set of all regions.
-  board_visitor_->Begin();
-  for (int row = 0; row < kN; ++row) {
-    for (int col = 0; col < kN; ++col) {
-      Coord c(row, col);
-      if (stones_[c].color() == color || !board_visitor_->Visit(c)) {
-        continue;
-      }
+  // +-------------------------+
+  // | Initialization is done. |
+  // | Run Benson's algorithm. |
+  // +-------------------------+
 
-      // We've found a new region.
-      // Visit each empty point and stone of the opposite color in the region,
-      // initializing the region's list of empty points, its list of enclosing
-      // groups, and the indices array.
-      auto region_idx = static_cast<uint16_t>(regions.size());
-      regions.emplace_back(empty_points.size(), region_groups.size());
-      auto& r = regions[region_idx];
-      group_visitor_->Begin();
-      while (!board_visitor_->Done()) {
-        c = board_visitor_->Next();
+  // List of chains removed each iteration.
+  inline_vector<Coord, kN * kN> removed_chains;
 
-        indices[c] = region_idx;
-        if (stones_[c].empty()) {
-          empty_points.push_back(c);
-          r.num_empty_points += 1;
-        }
-
-        for (auto nc : kNeighborCoords[c]) {
-          auto ns = stones_[nc];
-          if (ns.color() != color) {
-            board_visitor_->Visit(nc);
-          } else if (group_visitor_->Visit(ns.group_id())) {
-            region_groups.push_back(indices[nc]);
-            r.num_enclosing_groups += 1;
-          }
-        }
-      }
-
-      // Sort the region's list of empty points.
-      auto* empty_points_begin = &empty_points[r.empty_points_begin];
-      auto* empty_points_end = empty_points_begin + r.num_empty_points;
-      std::sort(empty_points_begin, empty_points_end);
-
-      // Find the vital groups for this region.
-      // A region is vital for a group if all the region's empty points are
-      // liberties of that group.
-      for (uint32_t i = 0; i < r.num_enclosing_groups; ++i) {
-        auto group_idx = region_groups[r.groups_begin + i];
-        auto& g = groups[group_idx];
-        const auto* liberties_begin = &liberties[g.liberties_begin];
-        const auto* liberties_end = liberties_begin + g.num_liberties;
-        const auto* empty_points_begin = &empty_points[r.empty_points_begin];
-        const auto* empty_points_end = empty_points_begin + r.num_empty_points;
-        bool is_vital = std::includes(liberties_begin, liberties_end,
-                                      empty_points_begin, empty_points_end);
-        if (is_vital) {
-          region_groups.push_back(group_idx);
-          r.num_vital_groups += 1;
-          g.num_vital_regions += 1;
-        }
-      }
-    }
-  }
-
-  // Initialization is now done.
-
-  // Initialize the set of candidate pass-alive groups to all the groups on the
-  // board, then iteratively remove those that Benson's Algorithm determines
-  // aren't pass-alive.
-  inline_vector<uint16_t, kMaxNumGroups> candidate_groups;
-  for (int i = 0; i < groups.size(); ++i) {
-    candidate_groups.push_back(static_cast<uint16_t>(i));
-  }
-
-  // List of groups removed each iteration.
-  inline_vector<uint16_t, kMaxNumGroups> removed_groups;
+  // The list of candidate pass-alive chains. This is initialized to the full
+  // list of chains and pruned.
+  auto candidate_chains = chains.coords();
   for (;;) {
-    removed_groups.clear();
+    removed_chains.clear();
 
-    // Iterate over remaining groups.
-    for (int i = 0; i < candidate_groups.size();) {
-      auto group_idx = candidate_groups[i];
-      auto& g = groups[group_idx];
-      if (g.num_vital_regions < 2) {
-        // This group has fewer than two vital regions, remove it.
-        removed_groups.push_back(group_idx);
-        candidate_groups[i] = candidate_groups.back();
-        candidate_groups.pop_back();
+    // Iterate over remaining chains.
+    for (int i = 0; i < candidate_chains.size();) {
+      auto chain_idx = candidate_chains[i];
+      auto& chain = chains[chain_idx];
+      if (chain.num_vital_regions < 2) {
+        // This chain has fewer than two vital regions, remove it.
+        removed_chains.push_back(chain_idx);
+        candidate_chains[i] = candidate_chains.back();
+        candidate_chains.pop_back();
       } else {
         i += 1;
       }
     }
-    if (removed_groups.empty()) {
-      // We didn't remove any groups, we're all done!
+    if (removed_chains.empty()) {
+      // We didn't remove any chains, we're all done!
       break;
     }
 
-    // For each removed group, remove every region it's adjacent to.
-    for (auto group_idx : removed_groups) {
-      auto& g = groups[group_idx];
-      // Since BensonGroup doesn't track which regions are adjacent to it, we
-      // iterate over the group's liberties, removing those regions as we go.
-      for (uint32_t i = 0; i != g.num_liberties; ++i) {
-        auto c = liberties[g.liberties_begin + i];
-        auto region_idx = indices[c];
-        if (region_idx == 0xffff) {
-          // We've already removed this region.
-          continue;
-        }
-
+    // For each removed chain, remove every region it's adjacent to.
+    for (auto chain_idx : removed_chains) {
+      auto& chain = chains[chain_idx];
+      for (auto region_idx : chain.enclosed_regions) {
         const auto& r = regions[region_idx];
-        for (uint32_t i = 0; i < r.num_empty_points; ++i) {
-          auto e = empty_points[r.empty_points_begin + i];
-          indices[e] = 0xffff;
-        }
-        for (uint32_t i = 0; i < r.num_vital_groups; ++i) {
-          auto group_idx =
-              region_groups[r.groups_begin + r.num_enclosing_groups + i];
-          groups[group_idx].num_vital_regions -= 1;
+        for (auto vital_chain_idx : r.vital_chains) {
+          chains[vital_chain_idx].num_vital_regions -= 1;
         }
       }
     }
   }
 
-  // candidate_groups now contains only pass-alive groups.
-  for (auto group_idx : candidate_groups) {
-    groups[group_idx].is_pass_alive = true;
+  // candidate_chains now contains only pass-alive chains.
+  for (auto chain_idx : candidate_chains) {
+    chains[chain_idx].is_pass_alive = true;
   }
 
-  // Now we know which groups are pass-alive, iterate over all the regions,
+  // Now we know which chains are pass-alive, iterate over all the regions,
   // finding which of those are also pass-alive. For a region to be pass-alive,
-  // all its enclosing groups must be pass-alive, and all but zero or one empty
-  // points must be adjacent to a neighboring group.
+  // all its enclosing chains must be pass-alive, and all but zero or one empty
+  // points must be adjacent to a neighboring chain.
 
-  board_visitor_->Begin();
-  for (auto& r : regions) {
-    // All regions must have at least one empty point, otherwise they'd be dead.
-    MG_CHECK(r.num_empty_points != 0);
-    if (r.num_enclosing_groups == 0) {
-      // Skip regions that have no enclosing group (the empty board).
-      // Because we consider regions that have one empty point that isn't
-      // adjacent to an enclosing group as pass-alive, we don't skip regions
-      // that aren't vital to any groups here.
+  // A region is only pass-alive if all its enclosing chains are pass-alive.
+  for (auto chain_id : chains.coords()) {
+    if (!chains[chain_id].is_pass_alive) {
+      for (auto& region_id : chains[chain_id].enclosed_regions) {
+        regions[region_id].is_pass_alive = false;
+      }
+    }
+  }
+
+  for (auto region_id : regions.coords()) {
+    auto& r = regions[region_id];
+    if (!r.is_pass_alive) {
       continue;
     }
 
-    // A region is only pass-alive if all its enclosing groups are pass-alive.
-    r.is_pass_alive = true;
-    for (uint32_t i = 0; i < r.num_enclosing_groups; ++i) {
-      auto group_idx = region_groups[r.groups_begin + i];
-      if (!groups[group_idx].is_pass_alive) {
+    // All regions must have at least one empty point, otherwise they'd be dead.
+    MG_CHECK(r.num_empty_points != 0);
+    if (r.num_enclosing_chains == 0) {
+      // Skip regions that have no enclosing chain (the empty board).
+      // Because we consider regions that have one empty point that isn't
+      // adjacent to an enclosing chain as pass-alive, we don't skip regions
+      // that aren't vital to any chains here.
+      // TODO(tommadams): num_enclosing_chains is only used here, we can
+      // probably get rid of it by doing this check another way.
+      continue;
+    }
+
+    // A region is only pass-alive if at most one empty point is not adjacent
+    // to an enclosing chain.
+    int num_interior_points = 0;
+    for (uint32_t i = 0; i < r.num_empty_points; ++i) {
+      auto c = empty_points[r.empty_points_begin + i];
+      bool is_interior = true;
+      for (auto nc : kNeighborCoords[c]) {
+        if (point_color(nc) == color) {
+          is_interior = false;
+          break;
+        }
+      }
+      if (is_interior && ++num_interior_points == 2) {
         r.is_pass_alive = false;
         break;
       }
     }
-
-    // A region is only pass-alive if at most one empty point is not adjacent
-    // to an enclosing group.
-    if (r.is_pass_alive) {
-      int num_interior_points = 0;
-      for (uint32_t i = 0; i < r.num_empty_points; ++i) {
-        auto c = empty_points[r.empty_points_begin + i];
-        bool is_interior = true;
-        for (auto nc : kNeighborCoords[c]) {
-          if (stones_[nc].color() == color) {
-            is_interior = false;
-            break;
-          }
-        }
-        if (is_interior && ++num_interior_points == 2) {
-          r.is_pass_alive = false;
-          break;
-        }
-      }
+    if (!r.is_pass_alive) {
+      continue;
     }
 
-    if (r.is_pass_alive) {
-      // This region is pass-alive, mark all the points in the region in the
-      // output array.
-      auto c = empty_points[r.empty_points_begin];
-      board_visitor_->Visit(c);
-      while (!board_visitor_->Done()) {
-        c = board_visitor_->Next();
-        (*result)[c] = color;
-        for (auto nc : kNeighborCoords[c]) {
-          if (stones_[nc].color() != color) {
-            board_visitor_->Visit(nc);
-          }
+    // This region is pass-alive, mark all the points in the region in the
+    // output array.
+    // The visitor object has so far only been visited with chain IDs, so we can
+    // reuse it without reinitialization to visit regions because chain & region
+    // IDs are disjoint.
+    auto c = empty_points[r.empty_points_begin];
+    coord_stack.push(c);
+    visitor.Visit(c, region_id);
+    while (!coord_stack.empty()) {
+      auto c = coord_stack.pop();
+      (*result)[c] = color;
+      for (auto nc : kNeighborCoords[c]) {
+        if (point_color(nc) != color && visitor.Visit(nc, region_id)) {
+          coord_stack.push(nc);
         }
       }
     }
@@ -946,7 +1047,7 @@ void Position::CalculatePassAliveRegionsForColor(
 bool Position::CalculateWholeBoardPassAlive() const {
   auto territories = CalculatePassAliveRegions();
   for (int i = 0; i < kN * kN; ++i) {
-    if (territories[i] == Color::kEmpty && stones_[i].empty()) {
+    if (territories[i] == Color::kEmpty && is_empty(i)) {
       return false;
     }
   }
@@ -954,13 +1055,15 @@ bool Position::CalculateWholeBoardPassAlive() const {
 }
 
 void Position::UpdateLegalMoves(ZobristHistory* zobrist_history) {
-  legal_moves_[Coord::kPass] = true;
-
   if (zobrist_history == nullptr) {
     // We're not checking for superko, use the basic result from ClassifyMove to
     // determine whether each move is legal.
     for (int c = 0; c < kN * kN; ++c) {
-      legal_moves_[c] = ClassifyMove(c) != MoveType::kIllegal;
+      if (ClassifyMove(c) == MoveType::kIllegal) {
+        points_[c].bits &= ~Point::kIsLegalBit;
+      } else {
+        points_[c].bits |= Point::kIsLegalBit;
+      }
     }
   } else {
     // We're using superko, things are a bit trickier.
@@ -968,7 +1071,7 @@ void Position::UpdateLegalMoves(ZobristHistory* zobrist_history) {
       switch (ClassifyMove(c)) {
         case Position::MoveType::kIllegal: {
           // The move is trivially not legal.
-          legal_moves_[c] = false;
+          points_[c].bits &= ~Point::kIsLegalBit;
           break;
         }
 
@@ -976,8 +1079,11 @@ void Position::UpdateLegalMoves(ZobristHistory* zobrist_history) {
           // The move will not capture any stones: we can calculate the new
           // position's stone hash directly.
           auto new_hash = stone_hash_ ^ zobrist::MoveHash(c, to_play_);
-          legal_moves_[c] =
-              !zobrist_history->HasPositionBeenPlayedBefore(new_hash);
+          if (zobrist_history->HasPositionBeenPlayedBefore(new_hash)) {
+            points_[c].bits &= ~Point::kIsLegalBit;
+          } else {
+            points_[c].bits |= Point::kIsLegalBit;
+          }
           break;
         }
 
@@ -993,13 +1099,71 @@ void Position::UpdateLegalMoves(ZobristHistory* zobrist_history) {
           //    the bookkeeping that PlayMove updates.
           new_position.AddStoneToBoard(c, to_play_);
           auto new_hash = new_position.stone_hash();
-          legal_moves_[c] =
-              !zobrist_history->HasPositionBeenPlayedBefore(new_hash);
+          if (zobrist_history->HasPositionBeenPlayedBefore(new_hash)) {
+            points_[c].bits &= ~Point::kIsLegalBit;
+          } else {
+            points_[c].bits |= Point::kIsLegalBit;
+          }
           break;
         }
       }
     }
   }
+}
+
+void Position::Validate() const {
+  // Validate the stone hash.
+  std::array<Color, kN * kN> stones;
+  for (int i = 0; i < kN * kN; ++i) {
+    stones[i] = point_color(i);
+  }
+
+  // Validate the chain sizes & liberty counts.
+  std::array<bool, kN * kN> validated{};
+  for (int i = 0; i < kN * kN; ++i) {
+    if (is_empty(i)) {
+      MG_CHECK(points_[i].next == Coord::kInvalid);
+      continue;
+    }
+    if (validated[i]) {
+      continue;
+    }
+    auto color = point_color(i);
+
+    std::array<bool, kN * kN> liberties{};
+    int size = 0;
+    int num_liberties = 0;
+    MG_CHECK(!validated[chain_head(i)]);
+    for (Coord c = chain_head(i); c != Coord::kInvalid; c = chain_next(c)) {
+      size += 1;
+      MG_CHECK(point_color(c) == color);
+      MG_CHECK(!validated[c]);
+      MG_CHECK(!is_legal_move(c));
+      if (chain_next(c) != Coord::kInvalid) {
+        MG_CHECK(chain_prev(chain_next(c)) == c)
+            << "c=" << c << "  " << c << ".prev=" << chain_prev(c) << "  " << c
+            << ".next=" << chain_next(c) << "  " << chain_next(c)
+            << ".prev=" << chain_prev(chain_next(c));
+      }
+      for (auto nc : kNeighborCoords[c]) {
+        if (is_empty(nc) && !liberties[nc]) {
+          liberties[nc] = true;
+          num_liberties += 1;
+        }
+      }
+      validated[c] = true;
+    }
+    MG_CHECK(size == chain_size(i))
+        << ToPrettyString() << "\n"
+        << Coord(i) << " computed_size:" << size
+        << " cached_size:" << chain_size(i) << " chain_head:" << chain_head(i);
+    MG_CHECK(num_liberties == num_chain_liberties(i))
+        << ToPrettyString() << "\n"
+        << Coord(i) << " computed_liberties:" << num_liberties
+        << " cached_liberties:" << num_chain_liberties(i);
+  }
+
+  MG_CHECK(stone_hash_ == CalculateStoneHash(stones));
 }
 
 }  // namespace minigo

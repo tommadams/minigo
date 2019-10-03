@@ -65,6 +65,20 @@ static constexpr char kOneStoneBoard[] = R"(
     .........
     .........)";
 
+int CountPendingVirtualLosses(const MctsNode* node) {
+  int num = 0;
+  std::vector<const MctsNode*> pending{node};
+  while (!pending.empty()) {
+    node = pending.back();
+    pending.pop_back();
+    MG_CHECK(node->num_virtual_losses_applied >= 0);
+    num += node->num_virtual_losses_applied;
+    for (const auto& p : node->children) {
+      pending.push_back(p.second.get());
+    }
+  }
+  return num;
+}
 
 class TestablePlayer : public MctsPlayer {
  public:
@@ -427,9 +441,7 @@ TEST_F(MctsPlayerTest, TreeSearchFailsafe) {
 // to decide whether to pass, it should be the first thing we check, but not
 // more than that.
 TEST_F(MctsPlayerTest, OnlyCheckGameEndOnce) {
-  BoardVisitor bv;
-  GroupVisitor gv;
-  Position position(&bv, &gv, Color::kBlack);
+  Position position;
 
   auto player =
       absl::make_unique<TestablePlayer>(game_.get(), MctsPlayer::Options());

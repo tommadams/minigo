@@ -20,8 +20,6 @@
 #include "absl/strings/string_view.h"
 #include "cc/color.h"
 #include "cc/coord.h"
-#include "cc/group.h"
-#include "cc/mcts_node.h"
 #include "cc/position.h"
 #include "cc/random.h"
 
@@ -35,15 +33,17 @@ class TestablePosition : public Position {
   TestablePosition(const std::array<Color, kN * kN>& stones,
                    Color to_play = Color::kBlack);
 
-  using Position::GroupAt;
   using Position::PlayMove;
 
   // Convenience functions that automatically parse coords.
+  int num_chain_liberties(absl::string_view str) const {
+    return Position::num_chain_liberties(Coord::FromString(str));
+  }
+  int chain_size(absl::string_view str) const {
+    return Position::chain_size(Coord::FromString(str));
+  }
   void PlayMove(absl::string_view str, Color color = Color::kEmpty) {
     Position::PlayMove(Coord::FromString(str), color);
-  }
-  Group GroupAt(absl::string_view str) const {
-    return Position::GroupAt(Coord::FromString(str));
   }
   Color IsKoish(absl::string_view str) const {
     return Position::IsKoish(Coord::FromString(str));
@@ -52,9 +52,6 @@ class TestablePosition : public Position {
     return Position::ClassifyMove(Coord::FromString(str));
   }
   using Position::ClassifyMove;
-
-  BoardVisitor board_visitor;
-  GroupVisitor group_visitor;
 };
 
 // Removes extraneous whitespace from a board string and returns it in the same
@@ -62,8 +59,6 @@ class TestablePosition : public Position {
 std::string CleanBoardString(absl::string_view str);
 
 std::array<Color, kN * kN> ParseBoard(absl::string_view str);
-
-int CountPendingVirtualLosses(const MctsNode* node);
 
 // Get a random legal move.
 // Only returns Coord::kPass if no other move is legal.

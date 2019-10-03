@@ -81,11 +81,14 @@ MctsNode::MctsNode(MctsNode* parent, Coord move)
     auto best_symmetry = symmetry::kIdentity;
     auto best_hash = position.stone_hash();
     bool found_unique_hash = true;
-    std::array<Stone, kN * kN> transformed;
+    std::array<Color, kN * kN> original;
+    for (int i = 0; i < kN * kN; ++i) {
+      original[i] = position.point_color(i);
+    }
+    std::array<Color, kN * kN> transformed;
     for (int i = 1; i < symmetry::kNumSymmetries; ++i) {
       auto sym = static_cast<symmetry::Symmetry>(i);
-      symmetry::ApplySymmetry<kN, 1>(sym, position.stones().data(),
-                                     transformed.data());
+      symmetry::ApplySymmetry<kN, 1>(sym, original.data(), transformed.data());
       auto stone_hash = Position::CalculateStoneHash(transformed);
       if (stone_hash < best_hash) {
         best_symmetry = sym;

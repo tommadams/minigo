@@ -35,14 +35,14 @@ class inline_vector {
   ~inline_vector() { clear(); }
   inline_vector(const inline_vector& other) {
     for (const auto& x : other) {
-      push_back(x);
+      unchecked_push_back(x);
     }
   }
   inline_vector& operator=(const inline_vector& other) {
     if (&other != this) {
       clear();
       for (const auto& x : other) {
-        push_back(x);
+        unchecked_push_back(x);
       }
     }
     return *this;
@@ -79,14 +79,13 @@ class inline_vector {
   }
 
   void push_back(const T& t) {
-    MG_CHECK(size_ < Capacity);
-    new (data() + size_) T(t);
-    ++size_;
+    MG_DCHECK(size_ < Capacity);
+    unchecked_push_back(t);
   }
 
   template <typename... Args>
   void emplace_back(Args&&... args) {
-    MG_CHECK(size_ < Capacity);
+    MG_DCHECK(size_ < Capacity);
     new (data() + size_) T(std::forward<Args>(args)...);
     ++size_;
   }
@@ -97,19 +96,19 @@ class inline_vector {
   const T& back() const { return data()[size_ - 1]; }
 
   void pop_back() {
-    MG_CHECK(size_ > 0);
+    MG_DCHECK(size_ > 0);
     --size_;
   }
 
   void resize(int size) {
-    MG_CHECK(size >= 0);
-    MG_CHECK(size <= Capacity);
+    MG_DCHECK(size >= 0);
+    MG_DCHECK(size <= Capacity);
     size_ = size;
   }
 
   void resize(int size, const T& t) {
-    MG_CHECK(size >= 0);
-    MG_CHECK(size <= Capacity);
+    MG_DCHECK(size >= 0);
+    MG_DCHECK(size <= Capacity);
     for (int i = size_; i < size; ++i) {
       data()[i] = t;
     }
@@ -117,6 +116,10 @@ class inline_vector {
   }
 
  private:
+  void unchecked_push_back(const T& t) {
+    new (data() + size_) T(t);
+    ++size_;
+  }
   int size_ = 0;
   uint8_t MG_ALIGN(alignof(T)) storage_[Capacity * sizeof(T)];
 };

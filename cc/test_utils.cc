@@ -59,7 +59,7 @@ TestablePosition::TestablePosition(absl::string_view board_str, Color to_play)
 
 TestablePosition::TestablePosition(const std::array<Color, kN * kN>& stones,
                                    Color to_play)
-    : Position(&board_visitor, &group_visitor, to_play) {
+    : Position(to_play) {
   for (int i = 0; i < kN * kN; ++i) {
     if (stones[i] != Color::kEmpty) {
       AddStoneToBoard(i, stones[i]);
@@ -71,7 +71,7 @@ TestablePosition::TestablePosition(const std::array<Color, kN * kN>& stones,
 Coord GetRandomLegalMove(const Position& position, Random* rnd) {
   std::vector<Coord> valid_moves;
   for (int i = 0; i < kN * kN; ++i) {
-    if (position.legal_move(i)) {
+    if (position.is_legal_move(i)) {
       valid_moves.push_back(i);
     }
   }
@@ -97,21 +97,6 @@ std::array<Color, kN * kN> ParseBoard(absl::string_view str) {
     }
   }
   return result;
-}
-
-int CountPendingVirtualLosses(const MctsNode* node) {
-  int num = 0;
-  std::vector<const MctsNode*> pending{node};
-  while (!pending.empty()) {
-    node = pending.back();
-    pending.pop_back();
-    MG_CHECK(node->num_virtual_losses_applied >= 0);
-    num += node->num_virtual_losses_applied;
-    for (const auto& p : node->children) {
-      pending.push_back(p.second.get());
-    }
-  }
-  return num;
 }
 
 }  // namespace minigo

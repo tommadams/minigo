@@ -18,7 +18,6 @@ minigo_cc_library(
     srcs = [
         "color.cc",
         "coord.cc",
-        "group.cc",
         "move.cc",
     ],
     hdrs = [
@@ -26,9 +25,7 @@ minigo_cc_library(
         "color.h",
         "constants.h",
         "coord.h",
-        "group.h",
         "move.h",
-        "stone.h",
     ],
     linkopts = select({
         "@bazel_tools//src/conditions:windows": ["ws2_32.lib"],
@@ -307,7 +304,6 @@ minigo_cc_library(
     deps = [
         ":base",
         ":logging",
-        ":mcts",
         ":position",
         ":random",
         "@com_google_absl//absl/strings",
@@ -365,7 +361,7 @@ minigo_cc_test_9_only(
         ":random",
         ":test_utils",
         "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest_main",
+        "@com_google_googletest//:gtest",
     ],
 )
 

@@ -15,6 +15,7 @@
 #ifndef CC_COLOR_H_
 #define CC_COLOR_H_
 
+#include <cstdint>
 #include <ostream>
 
 #include "absl/strings/string_view.h"
@@ -25,7 +26,7 @@ namespace minigo {
 // Color represents the stone color of each point on the board.
 // The position code relies on the values of kEmpty, kBlack and kWhite being
 // 0, 1, 2 respectively for some of its bit twiddling.
-enum class Color {
+enum class Color : uint8_t {
   kEmpty,
   kBlack,
   kWhite,
