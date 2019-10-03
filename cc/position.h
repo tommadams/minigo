@@ -44,23 +44,13 @@ class Position {
   // A default constructed Point represents an empty point that's legal to
   // play.
   struct Point {
-    static constexpr int kIsHeadBit = 0x8000;
-    static constexpr int kIsLegalBit = 0x4000;
-    static constexpr int kColorBits = 0x3000;
-    static constexpr int kColorShift = 12;
-    static constexpr int kSizeBits = 0x01ff;
-
-    // Returns the color of the chain at c, or Color::kEmpty.
-    Color color() const {
-      return static_cast<Color>((bits & Point::kColorBits) >>
-                                Point::kColorShift);
+    Point() {
+      head_size = 0;
+      color = 0;
+      // reserved = 0;
+      is_legal = 1;
+      is_head = 0;
     }
-
-    // Returns true if the point is empty.
-    bool is_empty() const { return (bits & Point::kColorBits) == 0; }
-
-    // Returns true if the point is a legal move.
-    bool is_legal_move() const { return (bits & Point::kIsLegalBit) != 0; }
 
     // If this point is the head of a chain: holds the number of liberties of
     // the chain. If this point is empty: holds 0. Otherwise: the previous point
@@ -82,7 +72,15 @@ class Position {
     //  S : If this point is the head of a chain or empty region: the size of
     //  that chain or empty region.
     //      Otherwise: the index of the head of the chain or empty region.
-    uint16_t bits = kIsLegalBit;
+    // uint16_t head_size : 9;
+    // uint16_t reserved : 3;
+    // uint16_t color : 2;
+    // uint16_t is_legal : 1;
+    // uint16_t is_head : 1;
+    uint16_t head_size;
+    uint8_t color;
+    uint8_t is_legal : 1;
+    uint8_t is_head : 1;
   };
 
   using Points = std::array<Point, kN * kN>;
@@ -184,22 +182,22 @@ class Position {
   const Points& points() const { return points_; }
 
   // Returns the color of the chain at c, or Color::kEmpty.
-  Color point_color(Coord c) const { return points_[c].color(); }
+  Color point_color(Coord c) const {
+    return static_cast<Color>(points_[c].color);
+  }
 
   // Return true if the point at c is empty.
-  bool is_empty(Coord c) const { return points_[c].is_empty(); }
+  bool is_empty(Coord c) const { return points_[c].color == 0; }
 
   // Returns true if the point at c is a legal move.
   bool is_legal_move(Coord c) const {
     MG_DCHECK(c <= Coord::kResign);
-    return c == Coord::kPass || c == Coord::kResign ||
-           points_[c].is_legal_move();
+    return c == Coord::kPass || c == Coord::kResign || points_[c].is_legal;
   }
 
   // Returns the number of liberties of the chain at c.
   // Returns 0 if the point at c is empty.
   int num_chain_liberties(Coord c) const {
-    MG_DCHECK(!is_empty(c));
     return static_cast<int>(points_[chain_head(c)].liberties_prev);
   }
 
@@ -207,15 +205,14 @@ class Position {
   // All stones in a chain have the same head.
   Coord chain_head(Coord c) const {
     MG_DCHECK(!is_empty(c));
-    return is_head(c) ? c
-                      : static_cast<Coord>(points_[c].bits & Point::kSizeBits);
+    return points_[c].is_head ? c : static_cast<Coord>(points_[c].head_size);
   }
 
   // Returns the previous stone in the chain at c o/ Coord::kInvalid if this is
   // the head of the list.
   Coord chain_prev(Coord c) const {
     MG_DCHECK(!is_empty(c));
-    return is_head(c) ? Coord::kInvalid : points_[c].liberties_prev;
+    return points_[c].is_head ? Coord::kInvalid : points_[c].liberties_prev;
   }
 
   // Returns the next stone in the chain c or Coord::kInvalid if this is the
@@ -227,8 +224,7 @@ class Position {
 
   // Returns the size of chain region at c.
   int chain_size(Coord c) const {
-    MG_DCHECK(!is_empty(c));
-    return static_cast<int>(points_[chain_head(c)].bits & Point::kSizeBits);
+    return static_cast<int>(points_[chain_head(c)].head_size);
   }
 
   // Validates the internal consitency of the Position.
@@ -323,10 +319,6 @@ class Position {
 
   // Returns true if the point at coordinate c neighbors a chain with head ch.
   bool HasNeighboringChain(Coord c, Coord ch) const;
-
-  uint16_t is_head(Coord c) const {
-    return points_[c].bits & Point::kIsHeadBit;
-  }
 
   Points points_;
 

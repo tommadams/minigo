@@ -152,7 +152,7 @@ void Position::UndoMove(const UndoState& undo,
     MG_CHECK(undo_color != Color::kEmpty);
     auto undo_head = chain_head(undo_c);
     auto undo_next = chain_next(undo_c);
-    auto size = points_[undo_head].bits & Point::kSizeBits;
+    auto size = points_[undo_head].head_size;
 
     // Unlink the stone from the chain.
     // We'll update the chain size and liberty count after.
@@ -163,9 +163,8 @@ void Position::UndoMove(const UndoState& undo,
         //  - copy the number of liberties & chain size from the old head.
         //  - update the rest of the stones to point to the new head.
         points_[undo_next].liberties_prev = points_[undo_c].liberties_prev;
-        points_[undo_next].bits =
-            (points_[undo_next].bits & ~Point::kSizeBits) | size |
-            Point::kIsHeadBit;
+        points_[undo_next].is_head = 1;
+        points_[undo_next].head_size = size;
 
         // Update the chain's head to the next stone in the chain.
         // TODO(tommadams): there's a minor opitimization available here: if
@@ -175,8 +174,7 @@ void Position::UndoMove(const UndoState& undo,
         undo_head = undo_next;
         for (auto chain_c = chain_next(undo_next); chain_c != Coord::kInvalid;
              chain_c = chain_next(chain_c)) {
-          points_[chain_c].bits =
-              (points_[chain_c].bits & ~Point::kSizeBits) | undo_head;
+          points_[chain_c].head_size = undo_head;
         }
       }
     } else {
@@ -229,7 +227,7 @@ void Position::UndoMove(const UndoState& undo,
       }
     } else {
       if (size > 1) {
-        points_[undo_head].bits -= 1;
+        points_[undo_head].head_size -= 1;
         points_[undo_head].liberties_prev -= num_lost_liberties;
       }
     }
@@ -339,13 +337,15 @@ inline_vector<Coord, 4> Position::AddStoneToBoard(Coord c, Color color) {
   }
 
   // Place the new stone on the board.
-  auto color_bits = (static_cast<uint16_t>(color) << Point::kColorShift);
+  auto color_bits = static_cast<uint16_t>(color);
   if (player_chains.empty()) {
     // The stone doesn't connect to any neighbors: create a new chain.
-    constexpr uint16_t chain_size = 1;
     points_[c].liberties_prev = liberties.size();
     points_[c].next = Coord::kInvalid;
-    points_[c].bits = color_bits | Point::kIsHeadBit | chain_size;
+    points_[c].head_size = 1;
+    points_[c].color = color_bits;
+    points_[c].is_legal = 0;
+    points_[c].is_head = 1;
   } else {
     // Designate the first chain in `player_chains` the primary chain. All
     // chains that the newly placed stone connect together will be spliced into
@@ -369,12 +369,15 @@ inline_vector<Coord, 4> Position::AddStoneToBoard(Coord c, Color color) {
     // after its head.
     points_[c].liberties_prev = primary_head;
     points_[c].next = points_[primary_head].next;
-    points_[c].bits = color_bits | primary_head;
+    points_[c].head_size = primary_head;
+    points_[c].color = color_bits;
+    points_[c].is_legal = 0;
+    points_[c].is_head = 0;
     if (points_[c].next != Coord::kInvalid) {
       points_[points_[c].next].liberties_prev = c;
     }
     points_[primary_head].next = c;
-    points_[primary_head].bits += 1;
+    points_[primary_head].head_size += 1;
 
     // Splice any remaining neighbor chains into the primary chain. The new
     // chains are spliced in before the newly placed stone. On the first
@@ -385,17 +388,14 @@ inline_vector<Coord, 4> Position::AddStoneToBoard(Coord c, Color color) {
       // Splice the head of this chain in after the primary head.
       auto splice_prev = points_[c].liberties_prev;
       auto splice_head = player_chains[i];
-      points_[primary_head].bits += chain_size(splice_head);
+      points_[primary_head].head_size += chain_size(splice_head);
       points_[splice_prev].next = splice_head;
       points_[splice_head].liberties_prev = splice_prev;
-
-      // Clear the "is head" bit of the spliced chain's head.
-      points_[splice_head].bits &= ~Point::kIsHeadBit;
+      points_[splice_head].is_head = 0;
 
       for (auto splice_c = splice_head;; splice_c = chain_next(splice_c)) {
         // Update the head references for all stones in the spliced chain.
-        points_[splice_c].bits =
-            (points_[splice_c].bits & ~Point::kSizeBits) | primary_head;
+        points_[splice_c].head_size = primary_head;
         if (points_[splice_c].next == Coord::kInvalid) {
           // Splice the tail of this chain in before the newly placed stone.
           points_[splice_c].next = c;
@@ -479,13 +479,15 @@ void Position::RemoveChain(Coord c) {
 
 void Position::UncaptureChain(Color color, Coord capture_c, Coord chain_c) {
   auto other_color = OtherColor(color);
-  auto color_bits = static_cast<uint16_t>(color) << Point::kColorShift;
+  auto color_bits = static_cast<uint16_t>(color);
 
   // Create a new chain whose head is at `chain_c`.
   auto head = chain_c;
   CoordStack coord_stack;
   coord_stack.push(head);
-  points_[head].bits = color_bits;
+  points_[head].color = color_bits;
+  points_[head].is_legal = 0;
+  points_[head].is_head = 1;
 
   auto prev = chain_c;
   int size = 0;
@@ -502,12 +504,14 @@ void Position::UncaptureChain(Color color, Coord capture_c, Coord chain_c) {
     tiny_set<Coord, 4> neighbor_chains;
     for (auto nc : kNeighborCoords[c]) {
       if (nc != capture_c) {
-        auto neighbor_color = points_[nc].color();
+        auto neighbor_color = point_color(nc);
         if (neighbor_color == Color::kEmpty) {
-          // Set the stone color immediately so that the point is no longer
-          // empty. We'll patch the list next & prev references when nc is
-          // popped off the coord stack.
-          points_[nc].bits = color_bits | head;
+          // Place the stone immediately so that the point is no longer empty.
+          // We'll patch next & prev when nc is popped off the coord stack.
+          points_[nc].head_size = head;
+          points_[nc].color = color_bits;
+          points_[nc].is_legal = 0;
+          points_[nc].is_head = 0;
           coord_stack.push(nc);
         } else if (neighbor_color == other_color) {
           auto nh = chain_head(nc);
@@ -525,13 +529,13 @@ void Position::UncaptureChain(Color color, Coord capture_c, Coord chain_c) {
 
   // By definition, the uncaptured chain must have only one liberty.
   points_[head].liberties_prev = 1;
-  points_[head].bits = color_bits | Point::kIsHeadBit | size;
+  points_[head].head_size = size;
 }
 
 void Position::RebuildChain(Coord c, TaggedPointVisitor* visitor) {
   auto color = point_color(c);
   auto other_color = OtherColor(color);
-  auto color_bits = (static_cast<uint16_t>(color) << Point::kColorShift);
+  auto color_bits = static_cast<uint16_t>(color);
 
   auto head = c;
   auto prev = c;
@@ -547,12 +551,15 @@ void Position::RebuildChain(Coord c, TaggedPointVisitor* visitor) {
     size += 1;
 
     points_[c].liberties_prev = prev;
-    points_[c].bits = color_bits | head;
+    points_[c].color = color_bits;
+    points_[c].head_size = head;
+    points_[c].is_head = 0;
+    MG_DCHECK(!points_[c].is_legal);
     points_[prev].next = c;
     prev = c;
 
     for (auto nc : kNeighborCoords[c]) {
-      auto neighbor_color = points_[nc].color();
+      auto neighbor_color = point_color(nc);
       if (neighbor_color == other_color || !visitor->Visit(nc, head)) {
         continue;
       }
@@ -570,7 +577,10 @@ void Position::RebuildChain(Coord c, TaggedPointVisitor* visitor) {
   points_[prev].next = Coord::kInvalid;
 
   points_[head].liberties_prev = num_liberties;
-  points_[head].bits = color_bits | Point::kIsHeadBit | size;
+  points_[head].color = color_bits;
+  points_[head].is_head = 1;
+  points_[head].is_legal = 0;
+  points_[head].head_size = size;
 }
 
 Color Position::IsKoish(Coord c) const {
@@ -645,7 +655,7 @@ float Position::CalculateScore(float komi) {
   auto territories = CalculatePassAliveRegions();
   for (int i = 0; i < kN * kN; ++i) {
     if (territories[i] == Color::kEmpty) {
-      territories[i] = points_[i].color();
+      territories[i] = point_color(i);
     }
   }
 
@@ -745,6 +755,9 @@ void Position::CalculatePassAliveRegionsForColor(
     Color color, std::array<Color, kN * kN>* result) const {
   // Extra per-chain data required by this implementation of Benson's algorithm.
   struct BensonChain {
+    explicit BensonChain(int enclosed_regions_begin)
+        : enclosed_regions_begin(
+              static_cast<uint16_t>(enclosed_regions_begin)) {}
     // The number of vital regions that this chain encloses. The BensonChain
     // itself doesn't keep track of which of its neighboring regions are vital,
     // it is sufficient for the BensonChain to track which of its enclosing
@@ -754,7 +767,14 @@ void Position::CalculatePassAliveRegionsForColor(
     // Whether the chain has been determined to be pass-alive.
     bool is_pass_alive = false;
 
-    std::vector<Coord> enclosed_regions;
+    uint16_t enclosed_regions_begin;
+    uint16_t num_enclosed_regions = 0;
+  };
+
+  struct ChainListNode {
+    ChainListNode(Coord chain, uint16_t next) : chain(chain), next(next) {}
+    Coord chain;
+    uint16_t next;
   };
 
   // Extra per-region data required by this implementation of Benson's
@@ -768,12 +788,7 @@ void Position::CalculatePassAliveRegionsForColor(
     uint16_t empty_points_begin;
     uint16_t num_empty_points;
 
-    // This region's chains.
-    // See the comments for the chains array below for more details.
-    uint16_t vital_chains_begin;
-    uint16_t num_vital_chains = 0;
-
-    std::vector<Coord> vital_chains;
+    uint16_t vital_chain_list = 0xffff;
 
     // A scratch variable that get reused while determining which regions are
     // vital for each chain.
@@ -812,7 +827,9 @@ void Position::CalculatePassAliveRegionsForColor(
   }
 
   // region_chains[region->chains_begin + region->num_enclosing_chains + j]
-  inline_vector<Coord, 2 * kN * kN> vital_chains;
+  inline_vector<ChainListNode, 2 * kN * kN> vital_chains;
+
+  inline_vector<Coord, kN * kN> enclosed_regions;
 
   // Used when flood-filling regions.
   CoordStack coord_stack;
@@ -822,7 +839,7 @@ void Position::CalculatePassAliveRegionsForColor(
   // +-------------------------+
   for (int idx = 0; idx < kN * kN; ++idx) {
     Coord region_c(idx);
-    if (points_[region_c].color() == color ||
+    if (point_color(region_c) == color ||
         region_indices[region_c] != Coord::kInvalid) {
       // This point either has a stone of the color we're computing pass-alive
       // territory for, or we've already processed it.
@@ -847,8 +864,7 @@ void Position::CalculatePassAliveRegionsForColor(
       }
 
       for (auto nc : kNeighborCoords[c]) {
-        if (points_[nc].color() != color &&
-            region_indices[nc] == Coord::kInvalid) {
+        if (point_color(nc) != color && region_indices[nc] == Coord::kInvalid) {
           region_indices[nc] = region_c;
           coord_stack.push(nc);
         }
@@ -864,7 +880,7 @@ void Position::CalculatePassAliveRegionsForColor(
   TaggedPointVisitor visitor(Coord::kInvalid);
   for (int idx = 0; idx < kN * kN; ++idx) {
     Coord c(idx);
-    if (points_[c].color() != color) {
+    if (point_color(c) != color) {
       continue;
     }
     Coord head = chain_head(c);
@@ -884,12 +900,12 @@ void Position::CalculatePassAliveRegionsForColor(
     //    Because we process chains serially (one chain is fully processed
     //    before we move on to the next one), the above per-region steps reuse
     //    some scratch member variables in the BensionRegions for simplicity.
-    auto& chain = chains.emplace(head);
+    auto& chain = chains.emplace(head, enclosed_regions.size());
     for (auto chain_c = head; chain_c != Coord::kInvalid;
          chain_c = chain_next(chain_c)) {
       visitor.Visit(chain_c, head);
       for (auto nc : kNeighborCoords[chain_c]) {
-        auto neighbor_color = points_[nc].color();
+        auto neighbor_color = point_color(nc);
         if (neighbor_color == color || !visitor.Visit(nc, head)) {
           continue;
         }
@@ -902,9 +918,10 @@ void Position::CalculatePassAliveRegionsForColor(
           region.most_recent_chain = head;
           region.num_enclosing_chains += 1;
           region.num_liberties_of_chain = 0;
-          chain.enclosed_regions.push_back(region_idx);
+          enclosed_regions.push_back(region_idx);
+          chain.num_enclosed_regions += 1;
         }
-        if (points_[nc].is_empty()) {
+        if (is_empty(nc)) {
           region.num_liberties_of_chain += 1;
         }
       }
@@ -913,11 +930,14 @@ void Position::CalculatePassAliveRegionsForColor(
     // Now that we've counted how many of the chain's liberties are empty points
     // of each neighboring region, it's trivial to figure out which of the
     // regions are vital for the chain.
-    for (auto region_idx : chain.enclosed_regions) {
+    for (int i = 0; i < chain.num_enclosed_regions; ++i) {
+      auto region_idx = enclosed_regions[chain.enclosed_regions_begin + i];
       if (regions[region_idx].num_liberties_of_chain ==
           regions[region_idx].num_empty_points) {
         chain.num_vital_regions += 1;
-        regions[region_idx].vital_chains.push_back(head);
+        vital_chains.emplace_back(head, regions[region_idx].vital_chain_list);
+        regions[region_idx].vital_chain_list =
+            static_cast<uint16_t>(vital_chains.size() - 1);
       }
     }
   }
@@ -957,10 +977,13 @@ void Position::CalculatePassAliveRegionsForColor(
     // For each removed chain, remove every region it's adjacent to.
     for (auto chain_idx : removed_chains) {
       auto& chain = chains[chain_idx];
-      for (auto region_idx : chain.enclosed_regions) {
+      for (int i = 0; i < chain.num_enclosed_regions; ++i) {
+        auto region_idx = enclosed_regions[chain.enclosed_regions_begin + i];
         const auto& r = regions[region_idx];
-        for (auto vital_chain_idx : r.vital_chains) {
-          chains[vital_chain_idx].num_vital_regions -= 1;
+        for (uint16_t vital_chain_idx = r.vital_chain_list;
+             vital_chain_idx != 0xffff;
+             vital_chain_idx = vital_chains[vital_chain_idx].next) {
+          chains[vital_chains[vital_chain_idx].chain].num_vital_regions -= 1;
         }
       }
     }
@@ -978,9 +1001,11 @@ void Position::CalculatePassAliveRegionsForColor(
 
   // A region is only pass-alive if all its enclosing chains are pass-alive.
   for (auto chain_id : chains.coords()) {
-    if (!chains[chain_id].is_pass_alive) {
-      for (auto& region_id : chains[chain_id].enclosed_regions) {
-        regions[region_id].is_pass_alive = false;
+    const auto& chain = chains[chain_id];
+    if (!chain.is_pass_alive) {
+      for (int i = 0; i < chain.num_enclosed_regions; ++i) {
+        auto region_idx = enclosed_regions[chain.enclosed_regions_begin + i];
+        regions[region_idx].is_pass_alive = false;
       }
     }
   }
@@ -1059,11 +1084,7 @@ void Position::UpdateLegalMoves(ZobristHistory* zobrist_history) {
     // We're not checking for superko, use the basic result from ClassifyMove to
     // determine whether each move is legal.
     for (int c = 0; c < kN * kN; ++c) {
-      if (ClassifyMove(c) == MoveType::kIllegal) {
-        points_[c].bits &= ~Point::kIsLegalBit;
-      } else {
-        points_[c].bits |= Point::kIsLegalBit;
-      }
+      points_[c].is_legal = ClassifyMove(c) != MoveType::kIllegal;
     }
   } else {
     // We're using superko, things are a bit trickier.
@@ -1071,7 +1092,7 @@ void Position::UpdateLegalMoves(ZobristHistory* zobrist_history) {
       switch (ClassifyMove(c)) {
         case Position::MoveType::kIllegal: {
           // The move is trivially not legal.
-          points_[c].bits &= ~Point::kIsLegalBit;
+          points_[c].is_legal = 0;
           break;
         }
 
@@ -1079,11 +1100,8 @@ void Position::UpdateLegalMoves(ZobristHistory* zobrist_history) {
           // The move will not capture any stones: we can calculate the new
           // position's stone hash directly.
           auto new_hash = stone_hash_ ^ zobrist::MoveHash(c, to_play_);
-          if (zobrist_history->HasPositionBeenPlayedBefore(new_hash)) {
-            points_[c].bits &= ~Point::kIsLegalBit;
-          } else {
-            points_[c].bits |= Point::kIsLegalBit;
-          }
+          points_[c].is_legal =
+              !zobrist_history->HasPositionBeenPlayedBefore(new_hash);
           break;
         }
 
@@ -1099,11 +1117,8 @@ void Position::UpdateLegalMoves(ZobristHistory* zobrist_history) {
           //    the bookkeeping that PlayMove updates.
           new_position.AddStoneToBoard(c, to_play_);
           auto new_hash = new_position.stone_hash();
-          if (zobrist_history->HasPositionBeenPlayedBefore(new_hash)) {
-            points_[c].bits &= ~Point::kIsLegalBit;
-          } else {
-            points_[c].bits |= Point::kIsLegalBit;
-          }
+          points_[c].is_legal =
+              !zobrist_history->HasPositionBeenPlayedBefore(new_hash);
           break;
         }
       }
