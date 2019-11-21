@@ -237,24 +237,25 @@ class SelfPlayer {
     MG_CHECK(FLAGS_parallel_games >= 1);
 
     int num_games = 0;
-    if (run_forever_) {
-      MG_CHECK(FLAGS_num_games == 0)
-          << "num_games must not be set if run_forever is true";
-    } else {
-      if (FLAGS_num_games == 0) {
-        num_games = FLAGS_parallel_games;
-      } else {
-        MG_CHECK(FLAGS_num_games >= FLAGS_parallel_games)
-            << "if num_games is set, it must be >= parallel_games";
-        num_games = FLAGS_num_games;
-      }
-    }
-
-    num_remaining_games_ = num_games;
-    run_forever_ = FLAGS_run_forever;
-
     {
       absl::MutexLock lock(&mutex_);
+
+      if (run_forever_) {
+        MG_CHECK(FLAGS_num_games == 0)
+            << "num_games must not be set if run_forever is true";
+      } else {
+        if (FLAGS_num_games == 0) {
+          num_games = FLAGS_parallel_games;
+        } else {
+          MG_CHECK(FLAGS_num_games >= FLAGS_parallel_games)
+              << "if num_games is set, it must be >= parallel_games";
+          num_games = FLAGS_num_games;
+        }
+      }
+
+      num_remaining_games_ = num_games;
+      run_forever_ = FLAGS_run_forever;
+
       auto model_factory = NewModelFactory(FLAGS_engine, FLAGS_device);
       // If the model path contains a pattern, wrap the implementation factory
       // in a ReloadingModelFactory to automatically reload the latest model
@@ -402,8 +403,10 @@ class SelfPlayer {
           search_start_time = absl::Now();
         }
 
-        fastplay = (thread_options.player_options.fastplay_frequency > 0 &&
-                    rnd_() < thread_options.player_options.fastplay_frequency);
+        if (thread_options.player_options.fastplay_frequency > 0) {
+          absl::MutexLock lock(&mutex_);
+          fastplay = rnd_() < thread_options.player_options.fastplay_frequency;
+        }
         readouts = (fastplay ? thread_options.player_options.fastplay_readouts
                              : thread_options.player_options.num_readouts);
 
@@ -591,7 +594,7 @@ class SelfPlayer {
   }
 
   absl::Mutex mutex_;
-  std::unique_ptr<BatchingModelFactory> batcher_ GUARDED_BY(&mutex_);
+  std::unique_ptr<BatchingModelFactory> batcher_;
   Random rnd_ GUARDED_BY(&mutex_);
   std::string model_name_ GUARDED_BY(&mutex_);
   std::vector<std::thread> threads_;

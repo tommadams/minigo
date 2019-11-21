@@ -530,7 +530,10 @@ MiniguiGtpClient::WinRateEvaluator::Worker::Worker(
     ThreadSafeQueue<VariationTree::Node*>* eval_queue)
     : game_(std::move(game)),
       player_(std::move(player)),
-      eval_queue_(eval_queue) {}
+      eval_queue_(eval_queue) {
+  absl::MutexLock lock(&mutex_);
+  model_ = player_->model();
+}
 
 MiniguiGtpClient::WinRateEvaluator::Worker::~Worker() {
   absl::MutexLock lock(&mutex_);
@@ -540,7 +543,7 @@ MiniguiGtpClient::WinRateEvaluator::Worker::~Worker() {
 }
 
 void MiniguiGtpClient::WinRateEvaluator::Worker::Prepare() {
-  BatchingModelFactory::StartGame(player_->model(), player_->model());
+  BatchingModelFactory::StartGame(model_, model_);
 }
 
 void MiniguiGtpClient::WinRateEvaluator::Worker::EvalAsync(
@@ -554,7 +557,7 @@ void MiniguiGtpClient::WinRateEvaluator::Worker::Run() {
   for (;;) {
     absl::MutexLock lock(&mutex_);
     mutex_.Await(absl::Condition(
-        &pending_, &absl::optional<VariationTree::Node*>::has_value));
+        this, &MiniguiGtpClient::WinRateEvaluator::Worker::has_pending_value));
     auto* node = *pending_;
     pending_.reset();
     if (node == nullptr) {
@@ -566,7 +569,7 @@ void MiniguiGtpClient::WinRateEvaluator::Worker::Run() {
       MG_CHECK(player_->PlayMove(c));
     }
     player_->TreeSearch(player_->options().virtual_losses, 1024);
-    BatchingModelFactory::EndGame(player_->model(), player_->model());
+    BatchingModelFactory::EndGame(model_, model_);
 
     nlohmann::json j = {
         {"id", node->id},

@@ -172,12 +172,19 @@ class MiniguiGtpClient : public GtpClient {
       void EvalAsync(VariationTree::Node* node);
 
      private:
+      // Work around for a bad interaction between absl::optional and
+      // absl::Condition.
+      bool has_pending_value() const EXCLUSIVE_LOCKS_REQUIRED(&mutex_) {
+        return pending_.has_value();
+      }
+
       void Run() override;
 
       absl::Mutex mutex_;
       absl::optional<VariationTree::Node*> pending_ GUARDED_BY(&mutex_);
       std::unique_ptr<Game> game_;
       std::unique_ptr<MctsPlayer> player_ GUARDED_BY(&mutex_);
+      Model* model_ = nullptr;
       std::vector<MctsNode*> leaves_;
       ThreadSafeQueue<VariationTree::Node*>* eval_queue_;
     };

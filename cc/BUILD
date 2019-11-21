@@ -119,11 +119,11 @@ minigo_cc_library(
 minigo_cc_library(
     name = "logging",
     srcs = ["logging.cc"],
+    hdrs = ["logging.h"],
     linkopts = select({
         "@bazel_tools//src/conditions:windows": ["ws2_32.lib"],
         "//conditions:default": ["-lpthread"],
     }),
-    hdrs = ["logging.h"],
     deps = [
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/debugging:stacktrace",
@@ -146,11 +146,13 @@ minigo_cc_library(
         "//cc/async:thread",
         "//cc/async:thread_safe_queue",
         "//cc/file",
+        "//cc/model",
         "//cc/model:batching_model",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -159,10 +161,11 @@ minigo_cc_library(
 # file named `downloaded`. Rename it to `json.h`.
 genrule(
     name = "json_h",
-    outs = ["json.h"],
     srcs = ["@com_github_nlohmann_json_single_header//file"],
+    outs = ["json.h"],
     cmd = "cp $< $@",
 )
+
 cc_library(
     name = "json",
     hdrs = [":json_h"],
@@ -342,6 +345,7 @@ minigo_cc_test_9_only(
     size = "small",
     srcs = ["mcts_tree_test.cc"],
     deps = [
+        ":base",
         ":mcts",
         ":position",
         ":random",
@@ -388,9 +392,12 @@ minigo_cc_test(
     srcs = ["pass_alive_test.cc"],
     deps = [
         ":base",
+        ":logging",
         ":position",
+        ":random",
         ":test_utils",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
         "@com_google_googletest//:gtest_main",
     ],
 )
