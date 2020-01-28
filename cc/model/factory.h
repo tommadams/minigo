@@ -55,9 +55,10 @@ class ModelMetadata {
 
   template <typename T>
   const T& Get(absl::string_view key) const {
-    const auto& prop = impl_.at(key);
-    MG_DCHECK(absl::holds_alternative<T>(prop)) << DebugString();
-    return absl::get<T>(prop);
+    auto it = impl_.find(key);
+    MG_CHECK(it != impl_.end() && absl::holds_alternative<T>(it->second))
+        << PropertyErrorString(key);
+    return absl::get<T>(it->second);
   }
 
   template <typename T>
@@ -76,6 +77,8 @@ class ModelMetadata {
   std::string DebugString() const;
 
  private:
+  std::string PropertyErrorString(absl::string_view key) const;
+
   absl::flat_hash_map<std::string, ModelProperty> impl_;
 };
 
@@ -90,6 +93,10 @@ struct ModelDefinition {
 class ModelFactory {
  public:
   virtual ~ModelFactory();
+
+  virtual std::unique_ptr<Model> NewModel(const std::string& descriptor) {
+    return nullptr;
+  }
 
   // Create a single model.
   virtual std::unique_ptr<Model> NewModel(const ModelDefinition& def) = 0;

@@ -23,6 +23,7 @@ import math
 
 from absl import app, flags
 import numpy as np
+import os
 import tensorflow as tf
 
 import bigtable_input
@@ -189,14 +190,14 @@ def train(*tf_records: "Records to train on"):
                     games,
                     games_nr,
                     params['batch_size'],
-                    params['input_layout'],
+                    'nhwc',
                     number_of_games=FLAGS.window_size,
                     random_rotation=True)
         else:
             def _input_fn(params):
                 return preprocessing.get_tpu_input_tensors(
                     params['batch_size'],
-                    params['input_layout'],
+                    'nhwc',
                     tf_records,
                     filter_amount=FLAGS.filter_amount,
                     shuffle_examples=FLAGS.shuffle_examples,
@@ -255,6 +256,12 @@ def main(argv):
     tf_records = argv[1:]
     logging.info("Training on %s records: %s to %s",
                  len(tf_records), tf_records[0], tf_records[-1])
+    dual_net.build_and_export_tpu(
+        FLAGS.work_dir,
+        os.path.join(FLAGS.export_path),
+        master=FLAGS.tpu_name)
+    return
+
     with utils.logged_timer("Training"):
         train(*tf_records)
     if FLAGS.export_path:

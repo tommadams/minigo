@@ -11,4 +11,4 @@
 # --input_features=$FEATURES and --input_layout=$LAYOUT must match
 # --model=random:$FEATURES:$LAYOUT:0 in bootstrap.flags.
 --input_features=mlperf07
---input_layout=nchw
+#--input_layout=nhwc

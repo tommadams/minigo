@@ -55,6 +55,12 @@ std::string ModelMetadata::DebugString() const {
   return absl::StrCat("{", absl::StrJoin(items, ", "), "}");
 }
 
+std::string ModelMetadata::PropertyErrorString(absl::string_view key) const {
+  return absl::StrCat(
+      "Metadata \"", key,
+      "\" not found or has wrong type, available metadata: ", DebugString());
+}
+
 ModelFactory::~ModelFactory() = default;
 
 }  // namespace minigo

@@ -102,6 +102,28 @@ minigo_cc_library(
     ],
 )
 
+minigo_cc_library(
+    name = "tpu_dual_net_new",
+    srcs = ["tpu_dual_net_new.cc"],
+    hdrs = ["tpu_dual_net_new.h"],
+    tags = ["manual"],
+    deps = [
+        "//cc:base",
+        "//cc:logging",
+        "//cc:random",
+        "//cc/file:path",
+        "//cc/model",
+        "//cc/model:factory",
+        "//cc/tensorflow",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
+        "@wtf",
+    ],
+)
+
 minigo_cc_test_9_only(
     name = "dual_net_test",
     size = "small",

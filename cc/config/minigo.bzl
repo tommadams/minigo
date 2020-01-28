@@ -94,7 +94,7 @@ minigo_engine_deps = select({
     "//cc/config:enable_lite": ["//cc/dual_net:lite_dual_net"],
     "//conditions:default": [],
 }) + select({
-    "//cc/config:enable_tpu": ["//cc/dual_net:tpu_dual_net"],
+    "//cc/config:enable_tpu": ["//cc/dual_net:tpu_dual_net_new"],
     "//conditions:default": [],
 })
 

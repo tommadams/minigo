@@ -913,17 +913,17 @@ FeatureDescriptor Selfplayer::InitializeModels() {
 void Selfplayer::CreateModels(const std::string& path) {
   MG_LOG(INFO) << "Loading model " << path;
 
-  auto def = LoadModelDefinition(path);
-  auto* factory = GetModelFactory(def, FLAGS_device);
-
-  auto model = factory->NewModel(def);
+  // auto def = LoadModelDefinition(path);
+  // auto* factory = GetModelFactory(def, FLAGS_device);
+  // auto model = factory->NewModel(def);
+  auto model = NewModel(path, FLAGS_device);
   {
     absl::MutexLock lock(&mutex_);
     latest_model_name_ = model->name();
   }
   models_.Push(std::move(model));
   for (int i = 1; i < FLAGS_parallel_inference; ++i) {
-    models_.Push(factory->NewModel(def));
+    models_.Push(NewModel(path, FLAGS_device));
   }
 }
 

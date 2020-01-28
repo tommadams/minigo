@@ -34,7 +34,7 @@
 #endif  // MG_ENABLE_LITE_DUAL_NET
 
 #ifdef MG_ENABLE_TPU_DUAL_NET
-#include "cc/dual_net/tpu_dual_net.h"
+#include "cc/dual_net/tpu_dual_net_new.h"
 #endif  // MG_ENABLE_TPU_DUAL_NET
 
 namespace minigo {
@@ -116,7 +116,7 @@ class FactoryRegistry {
 
 #ifdef MG_ENABLE_TPU_DUAL_NET
     if (engine == "tpu") {
-      return absl::make_unique<TpuDualNetFactory>(device);
+      return absl::make_unique<TpuDualNetNewFactory>(device);
     }
 #endif  // MG_ENABLE_TPU_DUAL_NET
 
@@ -236,9 +236,8 @@ ModelFactory* GetModelFactory(const ModelDefinition& def,
 
 std::unique_ptr<Model> NewModel(const std::string& path,
                                 const std::string& device) {
-  auto def = LoadModelDefinition(path);
-  auto* factory = GetModelFactory(def, device);
-  return factory->NewModel(def);
+  auto* factory = FactoryRegistry::Get()->GetFactory("tpu", device);
+  return factory->NewModel(path);
 }
 
 }  // namespace minigo

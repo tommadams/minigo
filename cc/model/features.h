@@ -421,7 +421,7 @@ using AgzFeatures = Features<StoneFeatures<8>, ToPlayFeature>;
 
 // StoneFeatures must be listed first.
 using Mlperf07Features = Features<
-    StoneFeatures<4>, ToPlayFeature, LibertyFeatures, WouldCaptureFeature>;
+    StoneFeatures<8>, ToPlayFeature, LibertyFeatures, WouldCaptureFeature>;
 
 // Maximum number of feature planes used by these features.
 constexpr int kMaxNumFeaturePlanes =
