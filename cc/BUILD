@@ -452,6 +452,39 @@ minigo_cc_test(
 )
 
 minigo_cc_binary(
+    name = "concurrent_eval",
+    srcs = ["concurrent_eval.cc"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":base",
+        ":game",
+        ":game_utils",
+        ":init",
+        ":logging",
+        ":mcts",
+        ":random",
+        ":tf_utils",
+        ":wtf_saver",
+        ":zobrist",
+        "//cc/async:poll_thread",
+        "//cc/async:sharded_executor",
+        "//cc/async:thread",
+        "//cc/async:thread_safe_queue",
+        "//cc/file",
+        "//cc/model:buffered_model",
+        "//cc/model:loader",
+        "//cc/platform",
+        "@com_github_gflags_gflags//:gflags",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
+        "@wtf",
+    ],
+)
+
+minigo_cc_binary(
     name = "concurrent_selfplay",
     srcs = ["concurrent_selfplay.cc"],
     visibility = ["//visibility:public"],

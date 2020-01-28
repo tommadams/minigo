@@ -85,6 +85,22 @@ class MctsNode {
             parent->move == Coord::kPass);
   }
 
+  void GetPositionHistory(
+      inline_vector<const Position*, kMaxPositionHistory>* history) {
+    history->clear();
+
+    // TODO(tommadams): add a method to FeatureDescriptor that returns the
+    // required position history size.
+    auto* node = this;
+    for (int i = 0; i < history->capacity(); ++i) {
+      history->push_back(&node->position);
+      node = node->parent;
+      if (node == nullptr) {
+        break;
+      }
+    }
+  }
+
   // Finds the best move by visit count, N. Ties are broken using the child
   // action score.
   Coord GetMostVisitedMove(bool restrict_pass_alive = false) const;

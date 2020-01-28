@@ -692,17 +692,7 @@ bool SelfplayGame::MaybeQueueInference(MctsNode* leaf, InferenceCache* cache,
   inference.cache_key = cache_key;
   inference.input.sym = inference_sym;
   inference.leaf = leaf;
-
-  // TODO(tommadams): add a method to FeatureDescriptor that returns the
-  // required position history size.
-  auto* node = leaf;
-  for (int i = 0; i < inference.input.position_history.capacity(); ++i) {
-    inference.input.position_history.push_back(&node->position);
-    node = node->parent;
-    if (node == nullptr) {
-      break;
-    }
-  }
+  leaf->GetPositionHistory(inference.input.position_history);
 
   tree_->AddVirtualLoss(leaf);
   return true;
@@ -1004,8 +994,8 @@ void SelfplayThread::SelectLeaves() {
       TreeSearch::InferenceSpan span;
       span.selfplay_game = selfplay_games_[i].get();
       span.pos = search.inferences.size();
-      auto stats = span.selfplay_game->SelectLeaves(cache_.get(),
-                                                    &search.inferences);
+      auto stats =
+          span.selfplay_game->SelectLeaves(cache_.get(), &search.inferences);
       span.len = stats.num_leaves_queued;
       if (span.len > 0) {
         search.inference_spans.push_back(span);
