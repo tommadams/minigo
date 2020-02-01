@@ -174,7 +174,7 @@ class EvalGame {
   }
 
   // Returns true if the predicted win rate is below `resign_threshold`.
-  bool ShouldResign(Color color) const;
+  bool ShouldResign(Color toPlay) const;
 
   const Options options_;
   std::unique_ptr<Game> game_;
@@ -185,7 +185,7 @@ class EvalGame {
   // Number of consecutive passes played by black and white respectively.
   // Used to determine when to disallow playing in pass-alive territory.
   // `num_consecutive_passes_` latches once it reaches
-  // `restrict_pass_alive_play_threshold` is is not reset to 0 when a non-pass
+  // `restrict_pass_alive_play_threshold` is not reset to 0 when a non-pass
   // move is played.
   int num_consecutive_passes_[2] = {0, 0};
 
@@ -442,8 +442,8 @@ void EvalGame::PlayMove(Color color, const std::string& model_name) {
   }
 }
 
-bool EvalGame::ShouldResign(Color color) const {
-  const auto* tree = GetTree(color);
+bool EvalGame::ShouldResign(Color toPlay) const {
+  const auto* tree = GetTree(toPlay);
   return game_->options().resign_enabled &&
          tree->root()->Q_perspective() < game_->options().resign_threshold;
 }
@@ -497,7 +497,7 @@ void Evaluator::Run() {
   }
 
   // Stop the output threads by pushing one null game onto the output queue
-  // for each thread, causing the treads to exit when the pop them off.
+  // for each thread, causing the treads to exit when they pop them off.
   for (size_t i = 0; i < output_threads.size(); ++i) {
     output_queue_.Push(nullptr);
   }

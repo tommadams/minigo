@@ -692,7 +692,7 @@ bool SelfplayGame::MaybeQueueInference(MctsNode* leaf, InferenceCache* cache,
   inference.cache_key = cache_key;
   inference.input.sym = inference_sym;
   inference.leaf = leaf;
-  leaf->GetPositionHistory(inference.input.position_history);
+  leaf->GetPositionHistory(&inference.input.position_history);
 
   tree_->AddVirtualLoss(leaf);
   return true;
