@@ -585,6 +585,22 @@ minigo_cc_binary(
 )
 
 minigo_cc_binary(
+    name = "test_model",
+    srcs = ["test_model.cc"],
+    tags = ["manual"],
+    deps = [
+        ":base",
+        ":init",
+        ":position",
+        "//cc/model",
+        "//cc/model:loader",
+        "//cc/tensorflow",
+        "@com_github_gflags_gflags//:gflags",
+        "@com_google_absl//absl/strings:str_format",
+    ],
+)
+
+minigo_cc_binary(
     name = "tfrzz_to_cbt",
     srcs = ["tfrzz_to_cbt.cc"],
     tags = ["manual"],
